@@ -1,0 +1,62 @@
+{
+  "_comment": "Curated TAC pool for blue-merle v2 IMEI generation. All TACs must come from sub-6 5G devices whose band set overlaps the RG650V-NA-US (n2/n5/n12/n25/n41/n66/n70/n71/n77/n78). Mobile hotspot TACs preferred over smartphone TACs — closer fingerprint match to the Mudi 7. Verify each TAC at https://hicelltek.com/en/tac-lookup/ and include a source URL in each entry. DO NOT add LTE-only TACs; they caused confirmed throttling (GL.iNet forum thread 68449).",
+  "tacs": [
+    {
+      "tac": "86908204",
+      "device": "GL-iNet GL-X3000 Spitz AX",
+      "type": "mobile_hotspot",
+      "bands_5g_sub6": ["n41", "n77", "n78"],
+      "verified": false,
+      "source": "TODO: verify at hicelltek.com/en/tac-lookup/"
+    },
+    {
+      "tac": "35843080",
+      "device": "Samsung Galaxy S23 Ultra (SM-S918U, US)",
+      "type": "smartphone",
+      "bands_5g_sub6": ["n25", "n41", "n66", "n70", "n71", "n77"],
+      "verified": false,
+      "source": "TODO: verify at hicelltek.com/en/tac-lookup/"
+    },
+    {
+      "tac": "35296909",
+      "device": "Apple iPhone 13 Pro (A2483, US)",
+      "type": "smartphone",
+      "bands_5g_sub6": ["n5", "n25", "n41", "n66", "n77"],
+      "verified": false,
+      "source": "TODO: verify at hicelltek.com/en/tac-lookup/"
+    },
+    {
+      "tac": "35449507",
+      "device": "Apple iPhone 14 Pro (A2892, US)",
+      "type": "smartphone",
+      "bands_5g_sub6": ["n5", "n25", "n26", "n41", "n66", "n77"],
+      "verified": false,
+      "source": "TODO: verify at hicelltek.com/en/tac-lookup/"
+    },
+    {
+      "tac": "35676710",
+      "device": "Apple iPhone 15 Pro (A3293, US)",
+      "type": "smartphone",
+      "bands_5g_sub6": ["n5", "n25", "n26", "n41", "n66", "n77"],
+      "verified": false,
+      "source": "TODO: verify at hicelltek.com/en/tac-lookup/"
+    },
+    {
+      "tac": "86437503",
+      "device": "Netgear Nighthawk M6 Pro (MR6450)",
+      "type": "mobile_hotspot",
+      "bands_5g_sub6": ["n2", "n5", "n25", "n41", "n66", "n77"],
+      "verified": false,
+      "source": "TODO: verify at hicelltek.com/en/tac-lookup/"
+    },
+    {
+      "tac": "86614103",
+      "device": "Inseego MiFi X Pro 5G",
+      "type": "mobile_hotspot",
+      "bands_5g_sub6": ["n41", "n77", "n78"],
+      "verified": false,
+      "source": "TODO: verify at hicelltek.com/en/tac-lookup/"
+    }
+  ],
+  "_verification_note": "All entries are marked verified=false until confirmed against the IMEI/TAC database. Before v0.1.0 release, every entry needs a hicelltek source URL and verified=true. Remove any TAC where the device does not support at least n41 or n77 (the primary US 5G bands used by Mudi 7)."
+}

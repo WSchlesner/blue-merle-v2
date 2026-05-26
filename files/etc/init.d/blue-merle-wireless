@@ -1,0 +1,37 @@
+#!/bin/sh /etc/rc.common
+# blue-merle v2 — boot-time wireless identity randomization
+#
+# Runs at START=10, before repeater (15) and network (20), so MACs/SSIDs/passwords
+# are applied before the wireless subsystem brings interfaces up.
+# Modem operations (sim-swap Stage 2) are handled by blue-merle-sim-swap at START=25.
+#
+# Each feature can be toggled via /etc/config/blue-merle options section:
+#   uci set blue-merle.options.randomize_mac=0      # disable MAC rotation
+#   uci set blue-merle.options.randomize_ssid=0     # disable SSID rotation
+#   uci set blue-merle.options.randomize_hostname=0 # disable hostname rotation
+#   uci set blue-merle.options.randomize_password=0 # disable password rotation
+#   uci commit blue-merle
+
+. /lib/blue-merle/functions.sh
+
+START=10
+STOP=99
+
+_opt_enabled() {
+    local val
+    val=$(uci -q get "blue-merle.options.$1" 2>/dev/null)
+    [ "$val" != "0" ]
+}
+
+start() {
+    _opt_enabled randomize_on_boot || return 0
+    _opt_enabled randomize_mac      && RANDOMIZE_MACADDR
+    _opt_enabled randomize_ssid     && RANDOMIZE_SSID
+    _opt_enabled randomize_hostname && RANDOMIZE_HOSTNAME
+    _opt_enabled randomize_password && RANDOMIZE_PASSWORD
+    date '+%Y-%m-%d %H:%M (boot)' > /etc/blue-merle.last_wireless_rotate
+}
+
+stop() {
+    echo "blue-merle: wireless randomization service stopped"
+}

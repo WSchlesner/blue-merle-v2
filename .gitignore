@@ -1,0 +1,47 @@
+# --- Reference / research material (NOT part of the project) ---
+
+# v1 source tree — kept locally as a reference while porting.
+# Has its own .git, would create a submodule mess if tracked.
+blue-merle-v1/
+
+# Third-party / vendor documentation (copyrighted PDFs).
+# Don't redistribute via GitHub.
+mudi7-docs/
+reference-files/
+
+screenshots/
+
+
+# --- Editor & OS junk ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# --- Build output (added once we start packaging) ---
+# OpenWrt SDK build artifacts
+ipkg-*/
+*.ipk
+# build-ipk.sh staging directory
+build/
+
+# --- Secrets (never commit) ---
+*.key
+*.pem
+.env
+.env.local
+authorized_keys
+
+# Docs from development
+# Default values snapshot — contains WiFi passwords and SIM identifiers; local reference only
+PLAN.md
+docs/
+docs/Default-Values.md
+
+# --- Local-only output / scratch ---
+*.log
+scratch/
+tmp/

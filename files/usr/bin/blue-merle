@@ -1,0 +1,508 @@
+#!/usr/bin/env ash
+# blue-merle v2 — CLI entry point
+# Usage:
+#   blue-merle install                                      — capture factory state (run once)
+#   blue-merle status                                       — print per-slot IMEI/IMSI/ICCID + MACs
+#   blue-merle rotate [--slot1=random|det] [--slot2=random|det]  — rotate both IMEIs + re-attach
+#   blue-merle sim-swap [--slot1=random|det] [--slot2=random|det] — write throwaway IMEIs + poweroff; Stage 2 runs on next boot
+#   blue-merle restore                                      — restore all factory values
+#
+# Mode flags apply to rotate and sim-swap:
+#   --slot1=random        slot 1 gets a fresh random IMEI (default)
+#   --slot1=deterministic slot 1 gets a reproducible IMEI keyed to the SIM's IMSI
+#   --slot1=static        slot 1 uses the IMEI saved in blue-merle.options.static_imei_slot1
+#   --slot2=random        slot 2 / eSIM gets a fresh random IMEI (default)
+#   --slot2=deterministic slot 2 / eSIM gets a reproducible IMEI keyed to its IMSI
+#   --slot2=static        slot 2 uses the IMEI saved in blue-merle.options.static_imei_slot2
+#   --random              shorthand: both slots random
+#   --deterministic       shorthand: both slots deterministic
+#   --static              shorthand: both slots static
+
+. /lib/blue-merle/functions.sh
+
+FACTORY_CFG=/etc/config/blue-merle
+
+# ── Factory state helpers ─────────────────────────────────────────────────────
+
+# Read one value from the factory section: _get_factory <key>
+_get_factory() {
+    uci -c /etc/config get "blue-merle.factory.$1" 2>/dev/null
+}
+
+# Backward-compat: read the single legacy factory_imei from settings section.
+_get_factory_imei() {
+    uci -c /etc/config get blue-merle.settings.factory_imei 2>/dev/null
+}
+
+# Capture factory state.
+# Guards: skips if both IMEI and WiFi keys are already saved.
+# Upgrade-path: if IMEI is saved but WiFi keys are not, captures keys only.
+# Can also be invoked explicitly via: blue-merle install
+_save_factory_state() {
+    local existing existing_key _need_sta
+    existing=$(_get_factory slot1_imei 2>/dev/null)
+    existing_key=$(_get_factory wifi2g_key 2>/dev/null)
+
+    # Check if sta_mac needs saving (repeater connected after initial install).
+    _need_sta=0
+    if [ -z "$(_get_factory sta_mac 2>/dev/null)" ]; then
+        uci get wireless.sta >/dev/null 2>&1 && \
+            [ -n "$(uci -q get wireless.sta.macaddr 2>/dev/null)" ] && \
+            _need_sta=1
+    fi
+
+    # All data saved — nothing to do.
+    [ -n "$existing" ] && [ -n "$existing_key" ] && [ "$_need_sta" = "0" ] && return 0
+
+    echo "blue-merle: capturing factory state..."
+
+    # ── IMEIs + MACs + SSIDs + hostname — only on first install ───────────
+    if [ -z "$existing" ]; then
+        local slot1_imei slot2_imei
+        slot1_imei=$(READ_IMEI)
+        slot2_imei=$(READ_IMEI_SLOT2)
+        if [ -z "$slot1_imei" ]; then
+            echo "blue-merle: could not read IMEI — aborting factory capture" >&2
+            return 1
+        fi
+
+        # MACs: prefer factory_macaddr (GL-iNet RAWDATA-backed value)
+        local wifi2g_mac wifi5g_mac wifi6g_mac
+        local guest2g_mac guest5g_mac guest6g_mac sta_mac
+        for _iface in wifi2g wifi5g wifi6g guest2g guest5g guest6g; do
+            eval "${_iface}_mac=\$(uci -q get wireless.${_iface}.factory_macaddr 2>/dev/null || uci -q get wireless.${_iface}.macaddr 2>/dev/null)"
+        done
+        sta_mac=$(uci -q get wireless.sta.macaddr 2>/dev/null)
+
+        # SSIDs
+        local wifi2g_ssid wifi5g_ssid wifi6g_ssid guest_ssid guest5g_ssid guest6g_ssid hostname
+        wifi2g_ssid=$(uci -q get wireless.wifi2g.ssid 2>/dev/null)
+        wifi5g_ssid=$(uci -q get wireless.wifi5g.ssid 2>/dev/null)
+        wifi6g_ssid=$(uci -q get wireless.wifi6g.ssid 2>/dev/null)
+        guest_ssid=$(uci -q get wireless.guest2g.ssid 2>/dev/null)
+        guest5g_ssid=$(uci -q get wireless.guest5g.ssid 2>/dev/null)
+        guest6g_ssid=$(uci -q get wireless.guest6g.ssid 2>/dev/null)
+        hostname=$(uci -q get system.@system[0].hostname 2>/dev/null)
+
+        [ -f "$FACTORY_CFG" ] || touch "$FACTORY_CFG"
+        uci -c /etc/config set blue-merle.factory=blue-merle
+        uci -c /etc/config set blue-merle.factory.slot1_imei="$slot1_imei"
+        uci -c /etc/config set blue-merle.factory.slot2_imei="$slot2_imei"
+        uci -c /etc/config set blue-merle.factory.wifi2g_mac="$wifi2g_mac"
+        uci -c /etc/config set blue-merle.factory.wifi5g_mac="$wifi5g_mac"
+        uci -c /etc/config set blue-merle.factory.wifi6g_mac="$wifi6g_mac"
+        uci -c /etc/config set blue-merle.factory.guest2g_mac="$guest2g_mac"
+        uci -c /etc/config set blue-merle.factory.guest5g_mac="$guest5g_mac"
+        uci -c /etc/config set blue-merle.factory.guest6g_mac="$guest6g_mac"
+        uci -c /etc/config set blue-merle.factory.sta_mac="$sta_mac"
+        uci -c /etc/config set blue-merle.factory.wifi2g_ssid="$wifi2g_ssid"
+        uci -c /etc/config set blue-merle.factory.wifi5g_ssid="$wifi5g_ssid"
+        uci -c /etc/config set blue-merle.factory.wifi6g_ssid="$wifi6g_ssid"
+        uci -c /etc/config set blue-merle.factory.guest_ssid="$guest_ssid"
+        uci -c /etc/config set blue-merle.factory.guest5g_ssid="$guest5g_ssid"
+        uci -c /etc/config set blue-merle.factory.guest6g_ssid="$guest6g_ssid"
+        uci -c /etc/config set blue-merle.factory.hostname="$hostname"
+
+        echo "  IMEI (slot 1):   $slot1_imei"
+        echo "  IMEI (slot 2):   $slot2_imei"
+        echo "  WiFi MAC (2.4g): $wifi2g_mac"
+        echo "  SSID:            $wifi2g_ssid"
+        echo "  Hostname:        $hostname"
+    fi
+
+    # ── WiFi keys — first install or upgrade from pre-Phase-2 install ─────
+    if [ -z "$existing_key" ]; then
+        local wifi2g_key guest2g_key
+        wifi2g_key=$(uci -q get wireless.wifi2g.key 2>/dev/null)
+        guest2g_key=$(uci -q get wireless.guest2g.key 2>/dev/null)
+        uci -c /etc/config set blue-merle.factory=blue-merle
+        uci -c /etc/config set blue-merle.factory.wifi2g_key="$wifi2g_key"
+        uci -c /etc/config set blue-merle.factory.guest2g_key="$guest2g_key"
+        echo "  WiFi keys saved: main + guest"
+    fi
+
+    # ── STA (repeater) MAC — may be absent if repeater wasn't connected at install ──
+    local existing_sta
+    existing_sta=$(_get_factory sta_mac 2>/dev/null)
+    if [ -z "$existing_sta" ] && uci get wireless.sta >/dev/null 2>&1; then
+        local sta_mac
+        sta_mac=$(uci -q get wireless.sta.macaddr 2>/dev/null)
+        if [ -n "$sta_mac" ]; then
+            uci -c /etc/config set blue-merle.factory=blue-merle
+            uci -c /etc/config set blue-merle.factory.sta_mac="$sta_mac"
+            echo "  STA MAC saved: $sta_mac"
+        fi
+    fi
+
+    # ── Options section — defaults to all-on; Phase 3 LuCI writes these ──────
+    # Only initialize if section doesn't exist yet (never overwrite user settings).
+    if ! uci -q get blue-merle.options >/dev/null 2>&1; then
+        uci -c /etc/config set blue-merle.options=blue-merle
+        uci -c /etc/config set blue-merle.options.randomize_mac=1
+        uci -c /etc/config set blue-merle.options.randomize_ssid=1
+        uci -c /etc/config set blue-merle.options.randomize_hostname=1
+        uci -c /etc/config set blue-merle.options.randomize_password=1
+        uci -c /etc/config set blue-merle.options.randomize_on_boot=1
+    fi
+
+    uci -c /etc/config commit blue-merle
+    echo "blue-merle: factory state saved to $FACTORY_CFG"
+}
+
+# ── Status ────────────────────────────────────────────────────────────────────
+
+_print_status() {
+    echo "=== blue-merle v2 status ==="
+    echo ""
+    echo "SIM Slot 1:"
+    echo "  IMEI:  $(READ_IMEI)"
+    local _imsi1
+    _imsi1=$(READ_IMSI_SLOT1 2>/dev/null) && echo "  IMSI:  $_imsi1" || echo "  IMSI:  [not available]"
+    echo "  ICCID: $(READ_ICCID_SLOT1)"
+    echo ""
+    echo "SIM Slot 2 / eSIM:"
+    echo "  IMEI:  $(READ_IMEI_SLOT2)"
+    local _imsi2
+    _imsi2=$(READ_IMSI_SLOT2 2>/dev/null) && echo "  IMSI:  $_imsi2" || echo "  IMSI:  [not available]"
+    echo "  ICCID: $(READ_ICCID_SLOT2)"
+    echo ""
+    local _f1 _f2
+    _f1=$(_get_factory slot1_imei)
+    _f2=$(_get_factory slot2_imei 2>/dev/null || _get_factory field11_imei 2>/dev/null)
+    if [ -n "$_f1" ]; then
+        echo "Factory IMEIs:"
+        echo "  Slot 1: $_f1"
+        [ -n "$_f2" ] && echo "  Slot 2: $_f2"
+        echo ""
+    fi
+    echo "Active data slot: $(READ_ACTIVE_SLOT)"
+    echo ""
+    echo "=== MAC addresses ==="
+    for _iface in wifi2g wifi5g wifi6g guest2g guest5g guest6g sta; do
+        local _mac
+        _mac=$(uci -q get "wireless.${_iface}.macaddr" 2>/dev/null)
+        [ -n "$_mac" ] && echo "  ${_iface}: $_mac"
+    done
+    echo "  LAN/eth: $(uci -q get network.@device[0].macaddr 2>/dev/null)"
+    echo ""
+    echo "=== SSIDs ==="
+    for _iface in wifi2g wifi5g wifi6g; do
+        local _ssid
+        _ssid=$(uci -q get "wireless.${_iface}.ssid" 2>/dev/null)
+        [ -n "$_ssid" ] && echo "  ${_iface}: $_ssid"
+    done
+    echo "  Hostname: $(uci -q get system.@system[0].hostname 2>/dev/null)"
+    echo ""
+    echo "=== Randomization options ==="
+    for _opt in randomize_mac randomize_ssid randomize_hostname randomize_password; do
+        local _val
+        _val=$(uci -q get "blue-merle.options.${_opt}" 2>/dev/null)
+        [ -z "$_val" ] && _val="1 (default)"
+        echo "  ${_opt}: ${_val}"
+    done
+}
+
+# ── Core rotation ─────────────────────────────────────────────────────────────
+
+# Rotate wireless identity immediately, respecting per-feature option flags.
+# Calls wifi reload so changes take effect without a reboot.
+_rotate_wireless() {
+    local _v _new_sta_mac
+    _v() { uci -q get "blue-merle.options.$1" 2>/dev/null; }
+    [ "$(_v randomize_mac)"      != "0" ] && RANDOMIZE_MACADDR
+    [ "$(_v randomize_ssid)"     != "0" ] && RANDOMIZE_SSID
+    [ "$(_v randomize_hostname)" != "0" ] && RANDOMIZE_HOSTNAME
+    [ "$(_v randomize_password)" != "0" ] && RANDOMIZE_PASSWORD
+    # Snapshot the new STA MAC before wifi reload clobbers wireless.sta.macaddr.
+    _new_sta_mac=$(uci -q get wireless.sta.macaddr 2>/dev/null)
+    wifi reload 2>/dev/null
+    # wifi reload regenerates wireless.sta.macaddr — re-apply and push to live iface.
+    if [ -n "$_new_sta_mac" ] && uci get wireless.sta >/dev/null 2>&1; then
+        uci set "wireless.sta.macaddr=${_new_sta_mac}"
+        uci commit wireless
+        _sta_iface=$(uci -q get wireless.sta.ifname 2>/dev/null)
+        if [ -n "$_sta_iface" ]; then
+            ip link set "$_sta_iface" down 2>/dev/null
+            ip link set "$_sta_iface" address "$_new_sta_mac" 2>/dev/null
+            ip link set "$_sta_iface" up 2>/dev/null
+        fi
+    fi
+    date '+%Y-%m-%d %H:%M (manual)' > /etc/blue-merle.last_wireless_rotate
+    echo "blue-merle: wireless identity rotated."
+}
+
+# $1 = slot1 mode (random|deterministic)
+# $2 = slot2 mode (random|deterministic)
+# $3 = reboot flag (1 = reboot after write instead of CFUN cycle; for testing only)
+_rotate() {
+    local mode1="${1:-random}" mode2="${2:-random}" do_reboot="${3:-0}"
+
+    echo "blue-merle: disabling RF before IMEI write..."
+    MODEM_RF_DISABLE
+
+    echo "blue-merle: generating IMEIs (slot1=$mode1, slot2=$mode2)..."
+    local imei1 imei2
+    imei1=$(_gen_imei 1 "$mode1")
+    imei2=$(_gen_imei 2 "$mode2")
+
+    if [ -z "$imei1" ] || [ -z "$imei2" ]; then
+        echo "blue-merle: IMEI generation failed" >&2
+        return 1
+    fi
+
+    echo "  Slot 1 IMEI: $imei1"
+    echo "  Slot 2 IMEI: $imei2"
+
+    SET_IMEIS "$imei1" "$imei2" || return 1
+
+    date '+%Y-%m-%d %H:%M (manual)' > /etc/blue-merle.last_imei_rotate
+
+    echo "  Slot 1 IMEI confirmed: $(READ_IMEI)"
+    echo "  Slot 2 IMEI confirmed: $(READ_IMEI_SLOT2)"
+
+    if [ "$do_reboot" = "1" ]; then
+        echo "blue-merle: rebooting in 3s to verify IMEI persistence..."
+        sleep 3
+        /sbin/reboot
+    else
+        echo "blue-merle: cycling modem RF for network re-attach..."
+        if MODEM_RESET_FOR_PRIVACY; then
+            echo "blue-merle: done."
+        else
+            echo "blue-merle: done."
+            echo "blue-merle: warning — modem did not re-register within 90s; check manually" >&2
+        fi
+    fi
+}
+
+# ── CLI flag parsing ──────────────────────────────────────────────────────────
+
+cmd="${1:-status}"
+_slot1_mode=$(uci -q get blue-merle.options.imei_mode_slot1 2>/dev/null)
+case "$_slot1_mode" in random|deterministic|static) ;; *) _slot1_mode="random" ;; esac
+_slot2_mode=$(uci -q get blue-merle.options.imei_mode_slot2 2>/dev/null)
+case "$_slot2_mode" in random|deterministic|static) ;; *) _slot2_mode="random" ;; esac
+_reboot=0
+
+for _arg in "$@"; do
+    case "$_arg" in
+        --random)        _slot1_mode="random";        _slot2_mode="random" ;;
+        --deterministic) _slot1_mode="deterministic"; _slot2_mode="deterministic" ;;
+        --static)        _slot1_mode="static";        _slot2_mode="static" ;;
+        --slot1=*)       _slot1_mode="${_arg#--slot1=}" ;;
+        --slot2=*)       _slot2_mode="${_arg#--slot2=}" ;;
+        --reboot)        _reboot=1 ;;
+    esac
+done
+
+# ── Commands ─────────────────────────────────────────────────────────────────
+
+case "$cmd" in
+    install)
+        _save_factory_state
+        ;;
+
+    status)
+        _print_status
+        ;;
+
+    rotate)
+        _save_factory_state || exit 1
+        _rotate "$_slot1_mode" "$_slot2_mode" "$_reboot"
+        ;;
+
+    rotate-wireless)
+        _save_factory_state || exit 1
+        _rotate_wireless
+        ;;
+
+    sim-swap)
+        _save_factory_state || exit 1
+
+        echo "── Blue-Merle SIM Swap ────────────────────────────────"
+        echo "  Slot 1 mode: $_slot1_mode  |  Slot 2 mode: $_slot2_mode"
+        echo ""
+
+        _ss_old_imei1=$(READ_IMEI)
+        _ss_old_imei2=$(READ_IMEI_SLOT2)
+        _ss_old_imsi1=$(READ_IMSI_SLOT1 2>/dev/null)
+        _ss_old_imsi2=$(READ_IMSI_SLOT2 2>/dev/null)
+
+        echo "Current state:"
+        echo "  Slot 1 — IMEI: $_ss_old_imei1  IMSI: ${_ss_old_imsi1:-[none]}"
+        echo "  Slot 2 — IMEI: $_ss_old_imei2  IMSI: ${_ss_old_imsi2:-[none]}"
+        echo ""
+
+        # Disable RF — no old IMEI transmission during the transition window.
+        _screen_msg "SIM swap: disabling RF..."
+        MODEM_RF_DISABLE
+
+        # Write random throwaway IMEIs to both slots so the old subscriber
+        # identities never deregister under either real IMEI.
+        _screen_msg "SIM swap: writing throwaway IMEIs..."
+        _ss_pre_imei1=$(GENERATE_IMEI)
+        _ss_pre_imei2=$(GENERATE_IMEI)
+        if [ -z "$_ss_pre_imei1" ] || [ -z "$_ss_pre_imei2" ]; then
+            echo "blue-merle: IMEI generation failed" >&2
+            exit 1
+        fi
+        SET_IMEIS "$_ss_pre_imei1" "$_ss_pre_imei2" || exit 1
+
+        echo "  Slot 1 throwaway: $_ss_pre_imei1"
+        echo "  Slot 2 throwaway: $_ss_pre_imei2"
+
+        # Save state for Stage 2 — completed automatically on next boot.
+        printf 'SLOT1_MODE=%s\nSLOT2_MODE=%s\nOLD_IMSI1=%s\nOLD_IMSI2=%s\n' \
+            "$_slot1_mode" "$_slot2_mode" \
+            "${_ss_old_imsi1}" "${_ss_old_imsi2}" \
+            > /etc/blue-merle.sim-swap-pending
+
+        echo ""
+        _screen_msg "SIM swap: powering off in 5s."
+        echo "  After poweroff: remove battery, swap SIM(s), replace battery, power on."
+        echo "  Final IMEIs will be written automatically on next boot."
+        echo "  Change location before booting."
+        sleep 5
+        /sbin/poweroff
+        ;;
+
+    restore)
+        _f_imei1=$(_get_factory slot1_imei)
+        _f_imei2=$(_get_factory slot2_imei 2>/dev/null)
+        # Fall back to old field11_imei name from earlier installs
+        [ -z "$_f_imei2" ] && _f_imei2=$(_get_factory field11_imei 2>/dev/null)
+        # Fall back to legacy single-IMEI config if factory section absent
+        [ -z "$_f_imei1" ] && _f_imei1=$(_get_factory_imei)
+
+        if [ -z "$_f_imei1" ]; then
+            echo "blue-merle: no factory state saved in $FACTORY_CFG" >&2
+            echo "blue-merle: run 'blue-merle install' first" >&2
+            exit 1
+        fi
+
+        echo "blue-merle: restoring factory IMEIs..."
+        echo "  Slot 1: $_f_imei1"
+        [ -n "$_f_imei2" ] && echo "  Slot 2: $_f_imei2"
+
+        MODEM_RF_DISABLE
+        SET_IMEI_SLOT1 "$_f_imei1" || {
+            echo "blue-merle: failed to restore slot 1 IMEI" >&2
+            exit 1
+        }
+        if [ -n "$_f_imei2" ]; then
+            SET_IMEI_SLOT2 "$_f_imei2" || {
+                echo "blue-merle: failed to restore slot 2 IMEI" >&2
+                exit 1
+            }
+        fi
+        _at AT+QPRTPARA=1 >/dev/null 2>&1
+
+        # Restore MACs.
+        echo "blue-merle: restoring factory MAC addresses..."
+        for _iface in wifi2g wifi5g wifi6g guest2g guest5g guest6g; do
+            _fmac=$(_get_factory "${_iface}_mac")
+            [ -n "$_fmac" ] && uci get "wireless.${_iface}" >/dev/null 2>&1 && \
+                uci set "wireless.${_iface}.macaddr=${_fmac}"
+        done
+        _sta_mac=$(_get_factory sta_mac)
+        if [ -n "$_sta_mac" ] && uci get wireless.sta >/dev/null 2>&1; then
+            uci set "wireless.sta.macaddr=${_sta_mac}"
+            uci -q set "repeater.@network[0].macaddr=r,${_sta_mac}" 2>/dev/null
+            uci commit repeater 2>/dev/null
+        fi
+        # Re-enable GL-iNet's BSSID randomization now that we've cleared our MACs.
+        RESTORE_RANDOM_BSSID
+        uci commit wireless
+
+        # Restore SSIDs.
+        echo "blue-merle: restoring factory SSIDs..."
+        for _iface in wifi2g wifi5g wifi6g; do
+            _fssid=$(_get_factory "${_iface}_ssid")
+            # Fall back to wifi2g_ssid for installs predating per-band SSID storage.
+            [ -z "$_fssid" ] && _fssid=$(_get_factory wifi2g_ssid)
+            [ -n "$_fssid" ] && uci get "wireless.${_iface}" >/dev/null 2>&1 && \
+                uci set "wireless.${_iface}.ssid=${_fssid}"
+        done
+        for _iface in guest2g guest5g guest6g; do
+            _gssid=$(_get_factory "${_iface}_ssid")
+            # Fall back to legacy guest_ssid key for older installs.
+            [ -z "$_gssid" ] && _gssid=$(_get_factory guest_ssid)
+            [ -n "$_gssid" ] && uci get "wireless.${_iface}" >/dev/null 2>&1 && \
+                uci set "wireless.${_iface}.ssid=${_gssid}"
+        done
+        uci commit wireless
+
+        # Restore WiFi passwords.
+        echo "blue-merle: restoring factory WiFi passwords..."
+        _fkey=$(_get_factory wifi2g_key)
+        if [ -n "$_fkey" ]; then
+            for _iface in wifi2g wifi5g wifi6g; do
+                uci get "wireless.${_iface}" >/dev/null 2>&1 && \
+                    uci set "wireless.${_iface}.key=${_fkey}"
+            done
+        fi
+        _fgkey=$(_get_factory guest2g_key)
+        if [ -n "$_fgkey" ]; then
+            for _iface in guest2g guest5g guest6g; do
+                uci get "wireless.${_iface}" >/dev/null 2>&1 && \
+                    uci set "wireless.${_iface}.key=${_fgkey}"
+            done
+        fi
+        uci commit wireless
+
+        # Restore hostname.
+        _fhost=$(_get_factory hostname)
+        if [ -n "$_fhost" ]; then
+            echo "blue-merle: restoring hostname: $_fhost"
+            printf '%s' "$_fhost" > /proc/sys/kernel/hostname
+            uci set system.@system[0].hostname="$_fhost"
+            uci commit system
+        fi
+
+        MODEM_RESET_FOR_PRIVACY
+        WIFI_RELOAD
+
+        # wifi reload regenerates wireless.sta.macaddr when random_bssid=1.
+        # Re-apply the factory STA MAC and push it to the live interface.
+        if [ -n "$_sta_mac" ] && uci get wireless.sta >/dev/null 2>&1; then
+            uci set "wireless.sta.macaddr=${_sta_mac}"
+            uci commit wireless
+            _sta_iface=$(uci -q get wireless.sta.ifname 2>/dev/null)
+            if [ -n "$_sta_iface" ]; then
+                ip link set "$_sta_iface" down 2>/dev/null
+                ip link set "$_sta_iface" address "$_sta_mac" 2>/dev/null
+                ip link set "$_sta_iface" up 2>/dev/null
+            fi
+        fi
+
+        echo "blue-merle: restore complete."
+        echo "  Slot 1 IMEI: $(READ_IMEI)"
+        echo "  Slot 2 IMEI: $(READ_IMEI_SLOT2)"
+        ;;
+
+    *)
+        cat >&2 <<'EOF'
+Usage: blue-merle <command> [options]
+
+Commands:
+  install          Capture factory state (run once before first rotation)
+  status           Show per-slot IMEI, IMSI, ICCID and current MACs
+  rotate           Rotate both slot IMEIs and cycle RF for re-attach
+  rotate-wireless  Rotate MACs/SSIDs/hostname/password now (respects option flags)
+  sim-swap         Disable RF, write throwaway IMEIs, poweroff; Stage 2 (final IMEI write) runs on next boot
+  restore          Restore all factory IMEIs, MACs, SSIDs, and hostname
+
+Mode options (rotate / sim-swap):
+  --slot1=random|deterministic|static   IMEI mode for SIM Slot 1 (default: random)
+  --slot2=random|deterministic|static   IMEI mode for SIM Slot 2 / eSIM (default: random)
+  --random                              Both slots random (shorthand)
+  --deterministic                       Both slots deterministic (shorthand)
+  --static                              Both slots use saved static IMEI (shorthand)
+
+Testing options (rotate only):
+  --reboot                       Reboot after writing IMEIs instead of cycling RF
+                                 Use to verify IMEI persistence across a cold boot
+EOF
+        exit 1
+        ;;
+esac

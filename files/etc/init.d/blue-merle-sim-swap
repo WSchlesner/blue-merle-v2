@@ -1,0 +1,111 @@
+#!/bin/sh /etc/rc.common
+# blue-merle v2 — sim-swap Stage 2 completion
+#
+# Runs at START=25, after gl_cellular_manager (S23) has initialized the modem
+# subsystem and the AT socket is responsive.
+#
+# Note: S18 and S22 were tested and failed — the Quectel MHI modem stack on
+# the RG650V-NA requires gl_cellular_manager to fully initialize before the
+# AT socket accepts commands. S25 is the earliest reliable priority.
+#
+# This ordering ensures the throwaway IMEI from Stage 1 never reaches the
+# network: the final IMEI is written before cellular_manager first attaches.
+# gl_cellular_manager then handles registration from the new location with
+# the correct identity.
+#
+# On normal boots (no pending sim-swap) this script exits immediately with
+# zero overhead.
+
+. /lib/blue-merle/functions.sh
+
+START=25
+STOP=99
+
+# Poll until the modem AT interface is truly ready, or 30s timeout.
+# Checks both that the socket file exists AND that ATI returns OK — gl_modem
+# exits 0 even when the socket isn't yet accepting connections, so a simple
+# exit-code check is insufficient.
+_wait_for_at() {
+    local elapsed=0
+    while [ "$elapsed" -lt 30 ]; do
+        if [ -S /tmp/modem.CPU.AT.sock ]; then
+            local resp
+            resp=$(gl_modem -B "$BUS" -U 1 AT ATI 2>/dev/null)
+            if echo "$resp" | grep -q "OK"; then
+                return 0
+            fi
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    logger -p err -t blue-merle "sim-swap: AT interface not ready after 30s"
+    return 1
+}
+
+start() {
+    [ -f /etc/blue-merle.sim-swap-pending ] || return 0
+
+    _screen_msg "SIM swap: waiting for modem AT interface..."
+    _wait_for_at || return 1
+
+    _screen_msg "SIM swap: completing final IMEI write..."
+
+    # Read state then delete immediately — Stage 2 must never repeat on next boot.
+    local SLOT1_MODE="" SLOT2_MODE="" OLD_IMSI1="" OLD_IMSI2=""
+    . /etc/blue-merle.sim-swap-pending
+    rm -f /etc/blue-merle.sim-swap-pending
+
+    # Snapshot registration state before touching RF — tells us whether the
+    # throwaway IMEI managed to register during the S23-S25 window.
+    # Check with: logread | grep "sim-swap throwaway"
+    local _cereg1 _cereg2 _entry_imei1 _entry_imei2
+    _cereg1=$(gl_modem -B "$BUS" -U 1 AT 'AT+CEREG?' 2>/dev/null | tr -d '\r')
+    _cereg2=$(gl_modem -B "$BUS" -U 2 AT 'AT+CEREG?' 2>/dev/null | tr -d '\r')
+    _entry_imei1=$(READ_IMEI 2>/dev/null)
+    _entry_imei2=$(READ_IMEI_SLOT2 2>/dev/null)
+    logger -p notice -t blue-merle "sim-swap throwaway check: slot1 IMEI=$_entry_imei1 CEREG=$_cereg1"
+    logger -p notice -t blue-merle "sim-swap throwaway check: slot2 IMEI=$_entry_imei2 CEREG=$_cereg2"
+
+    # Cold boot already power-cycled the modem and read the new SIM.
+    # Read IMSIs directly — no CFUN reinit cycle needed.
+    local new_imsi1 new_imsi2
+    new_imsi1=$(READ_IMSI_SLOT1 2>/dev/null)
+    new_imsi2=$(READ_IMSI_SLOT2 2>/dev/null)
+
+    if [ -n "$OLD_IMSI1" ] && [ "$OLD_IMSI1" = "$new_imsi1" ]; then
+        logger -p warning -t blue-merle "sim-swap: slot 1 IMSI unchanged — was SIM swapped?"
+    fi
+    if [ -n "$OLD_IMSI2" ] && [ "$OLD_IMSI2" = "$new_imsi2" ]; then
+        logger -p warning -t blue-merle "sim-swap: slot 2 IMSI unchanged — was SIM swapped?"
+    fi
+
+    # Disable RF before writing — throwaway IMEI never broadcasts on this boot.
+    _screen_msg "SIM swap: writing final IMEIs..."
+    MODEM_RF_DISABLE
+
+    local imei1 imei2
+    imei1=$(_gen_imei 1 "$SLOT1_MODE")
+    imei2=$(_gen_imei 2 "$SLOT2_MODE")
+
+    if [ -z "$imei1" ] || [ -z "$imei2" ]; then
+        logger -p err -t blue-merle "sim-swap: IMEI generation failed"
+        return 1
+    fi
+
+    SET_IMEIS "$imei1" "$imei2" || {
+        logger -p err -t blue-merle "sim-swap: IMEI write failed"
+        return 1
+    }
+
+    date '+%Y-%m-%d %H:%M (sim-swap)' > /etc/blue-merle.last_imei_rotate
+
+    # Bring RF back on so gl_cellular_manager (S23) finds the modem in a
+    # normal state and handles registration with the final IMEI.
+    _at AT+CFUN=1 >/dev/null 2>&1
+    sleep 2
+
+    logger -p notice -t blue-merle "sim-swap complete: slot1=$imei1 slot2=$imei2"
+    _screen_msg "SIM swap: done. Registering with new identity..."
+}
+
+stop() { return 0; }

@@ -9,10 +9,37 @@ SUB=1  # logical subscription for _at() — slot 1 (-U 1); -U 0 alternates and m
 # ── Messaging ────────────────────────────────────────────────────────────────
 # Writes to syslog and stdout. During boot stdout goes to the system console;
 # during SSH sessions it appears inline.
-# Phase 4: add gl_screen/mcu ubus notification here when the display API is confirmed.
 _screen_msg() {
     logger -p notice -t blue-merle "$1"
     echo "blue-merle: $1"
+}
+
+_SCREENS_DIR=/usr/share/blue-merle/screens
+
+# Stop gl_screen (if running) and write a pre-rendered RGB565 frame to fb0.
+# Safe to call at any boot stage — stop is a no-op if gl_screen isn't running.
+# Uses procd ubus delete before stop to prevent automatic respawn (gl_screen
+# has procd_set_param respawn which would otherwise restart it within seconds).
+# $1 = frame name (rotating|done|simswap|restoring)
+_screen_splash() {
+    local frame="${_SCREENS_DIR}/${1}.rgb565"
+    [ -f "$frame" ] || return 0
+    ubus call service delete '{"name": "gl_screen"}' 2>/dev/null
+    /etc/init.d/gl_screen stop >/dev/null 2>&1
+    pkill -9 gl_screen 2>/dev/null
+    local _i=0
+    while pidof gl_screen >/dev/null 2>&1 && [ "$_i" -lt 5 ]; do
+        sleep 1
+        _i=$((_i + 1))
+    done
+    cat "$frame" > /dev/fb0 2>/dev/null
+}
+
+# Restart gl_screen so the normal touchscreen UI returns.
+# Only call from user-triggered operations (rotate, restore) — boot scripts
+# should not call this; S80 starts gl_screen automatically.
+_screen_restore_display() {
+    /etc/init.d/gl_screen start >/dev/null 2>&1
 }
 
 # ── Modem AT helpers ─────────────────────────────────────────────────────────

@@ -1,16 +1,9 @@
-# --- Reference / research material (NOT part of the project) ---
+# --- Development-only files (NOT part of the project) ---
+# Research docs, reference material, screenshots, and artifacts captured
+# during development. Not redistributed via GitHub.
+development-files/
 
-# v1 source tree — kept locally as a reference while porting.
-# Has its own .git, would create a submodule mess if tracked.
-blue-merle-v1/
-
-# Third-party / vendor documentation (copyrighted PDFs).
-# Don't redistribute via GitHub.
-mudi7-docs/
-reference-files/
-
-screenshots/
-
+# screens/previews/ is committed — the PNGs are embedded in the README.
 
 # --- Editor & OS junk ---
 .DS_Store
@@ -21,25 +14,24 @@ Thumbs.db
 .idea/
 .vscode/
 
-# --- Build output (added once we start packaging) ---
+# --- Build output ---
 # OpenWrt SDK build artifacts
 ipkg-*/
 *.ipk
 # build-ipk.sh staging directory
 build/
 
-# --- Secrets (never commit) ---
+# --- Secrets ---
 *.key
 *.pem
 .env
 .env.local
 authorized_keys
 
-# Docs from development
-# Default values snapshot — contains WiFi passwords and SIM identifiers; local reference only
-PLAN.md
-docs/
-docs/Default-Values.md
+# --- Python cache (from screens/generate.py) ---
+__pycache__/
+*.pyc
+*.pyo
 
 # --- Local-only output / scratch ---
 *.log

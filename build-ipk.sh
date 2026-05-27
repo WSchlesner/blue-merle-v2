@@ -36,6 +36,7 @@ install -m 0644 "$REPO/files/lib/blue-merle/luhn.lua"             "$STAGING/lib/
 
 install -d "$STAGING/usr/bin"
 install -m 0755 "$REPO/files/usr/bin/blue-merle"                  "$STAGING/usr/bin/blue-merle"
+install -m 0755 "$REPO/files/usr/bin/blue-merle-touch"            "$STAGING/usr/bin/blue-merle-touch"
 
 install -d "$STAGING/usr/libexec"
 install -m 0755 "$REPO/files/usr/libexec/blue-merle"              "$STAGING/usr/libexec/blue-merle"
@@ -44,10 +45,16 @@ install -d "$STAGING/etc/init.d"
 install -m 0755 "$REPO/files/etc/init.d/blue-merle-wireless"      "$STAGING/etc/init.d/blue-merle-wireless"
 install -m 0755 "$REPO/files/etc/init.d/blue-merle-sim-swap"      "$STAGING/etc/init.d/blue-merle-sim-swap"
 install -m 0755 "$REPO/files/etc/init.d/blue-merle-volatile-macs" "$STAGING/etc/init.d/blue-merle-volatile-macs"
+install -m 0755 "$REPO/files/etc/init.d/blue-merle-touch"         "$STAGING/etc/init.d/blue-merle-touch"
 
 install -d "$STAGING/usr/share/blue-merle"
 install -m 0644 "$REPO/files/usr/share/blue-merle/tac_pool.json"  "$STAGING/usr/share/blue-merle/tac_pool.json"
 install -m 0644 "$REPO/files/usr/share/blue-merle/oui_pool.json"  "$STAGING/usr/share/blue-merle/oui_pool.json"
+
+install -d "$STAGING/usr/share/blue-merle/screens"
+for _f in "$REPO/files/usr/share/blue-merle/screens/"*.rgb565; do
+    install -m 0644 "$_f" "$STAGING/usr/share/blue-merle/screens/$(basename "$_f")"
+done
 
 install -d "$STAGING/usr/share/luci/menu.d"
 install -m 0644 "$REPO/files/usr/share/luci/menu.d/luci-app-blue-merle.json" \
@@ -143,6 +150,8 @@ uci -q commit wireless
 /etc/init.d/blue-merle-volatile-macs enable
 /etc/init.d/blue-merle-wireless enable
 /etc/init.d/blue-merle-sim-swap enable
+/etc/init.d/blue-merle-touch enable
+/etc/init.d/blue-merle-touch start
 
 /etc/init.d/blue-merle-volatile-macs start
 [ -x /etc/init.d/gl_clients ] && /etc/init.d/gl_clients start 2>/dev/null
@@ -181,6 +190,8 @@ uci -q commit wireless
 /etc/init.d/blue-merle-volatile-macs disable 2>/dev/null
 /etc/init.d/blue-merle-wireless disable 2>/dev/null
 /etc/init.d/blue-merle-sim-swap disable 2>/dev/null
+/etc/init.d/blue-merle-touch stop 2>/dev/null
+/etc/init.d/blue-merle-touch disable 2>/dev/null
 
 rm -f /etc/blue-merle.last_imei_rotate \
       /etc/blue-merle.last_wireless_rotate \

@@ -48,7 +48,8 @@ case "$1" in
         _last_imei_rotate=$(cat /etc/blue-merle.last_imei_rotate 2>/dev/null)
         _last_wireless_rotate=$(cat /etc/blue-merle.last_wireless_rotate 2>/dev/null)
         _installed=$([ -n "$_fi1" ] && printf true || printf false)
-        printf '{"imei1":"%s","imei2":"%s","ssid":"%s","guest_ssid":"%s","mac_2g":"%s","mac_5g":"%s","mac_6g":"%s","mac_sta":"%s","mac_guest2g":"%s","mac_guest5g":"%s","mac_guest6g":"%s","hostname":"%s","wifi2g_key":"%s","guest2g_key":"%s","factory_i1":"%s","factory_i2":"%s","factory_ssid":"%s","factory_guest_ssid":"%s","factory_host":"%s","factory_mac_2g":"%s","factory_mac_5g":"%s","factory_mac_6g":"%s","factory_mac_sta":"%s","factory_mac_guest2g":"%s","factory_mac_guest5g":"%s","factory_mac_guest6g":"%s","factory_wifi2g_key":"%s","factory_guest2g_key":"%s","opt_mac":"%s","opt_ssid":"%s","opt_hostname":"%s","opt_password":"%s","opt_boot":"%s","imei_mode_slot1":"%s","imei_mode_slot2":"%s","static_imei_slot1":"%s","static_imei_slot2":"%s","last_imei_rotate":"%s","last_wireless_rotate":"%s","installed":%s}\n' \
+        _touch_enabled=$([ -n "$(ls /etc/rc.d/S*blue-merle-touch 2>/dev/null)" ] && printf '1' || printf '0')
+        printf '{"imei1":"%s","imei2":"%s","ssid":"%s","guest_ssid":"%s","mac_2g":"%s","mac_5g":"%s","mac_6g":"%s","mac_sta":"%s","mac_guest2g":"%s","mac_guest5g":"%s","mac_guest6g":"%s","hostname":"%s","wifi2g_key":"%s","guest2g_key":"%s","factory_i1":"%s","factory_i2":"%s","factory_ssid":"%s","factory_guest_ssid":"%s","factory_host":"%s","factory_mac_2g":"%s","factory_mac_5g":"%s","factory_mac_6g":"%s","factory_mac_sta":"%s","factory_mac_guest2g":"%s","factory_mac_guest5g":"%s","factory_mac_guest6g":"%s","factory_wifi2g_key":"%s","factory_guest2g_key":"%s","opt_mac":"%s","opt_ssid":"%s","opt_hostname":"%s","opt_password":"%s","opt_boot":"%s","imei_mode_slot1":"%s","imei_mode_slot2":"%s","static_imei_slot1":"%s","static_imei_slot2":"%s","last_imei_rotate":"%s","last_wireless_rotate":"%s","touch_enabled":"%s","installed":%s}\n' \
             "${_imei1:----}" "${_imei2:----}" \
             "$(_js "${_ssid:----}")" "$(_js "${_gssid:----}")" \
             "${_mac2g:----}" "${_mac5g:----}" "${_mac6g:----}" "${_macsta:----}" \
@@ -67,6 +68,7 @@ case "$1" in
             "${_sst1}" "${_sst2}" \
             "$(_js "${_last_imei_rotate}")" \
             "$(_js "${_last_wireless_rotate}")" \
+            "$_touch_enabled" \
             "$_installed"
         ;;
     rotate)
@@ -110,6 +112,16 @@ case "$1" in
                     || uci -q set blue-merle.options=blue-merle
                 uci -q set "blue-merle.options.${_key}=${_val}"
                 uci -q commit blue-merle
+                printf '{"saved":true}\n'
+                ;;
+            touch_enabled)
+                if [ "$_val" = "1" ]; then
+                    /etc/init.d/blue-merle-touch enable 2>/dev/null
+                    /etc/init.d/blue-merle-touch start 2>/dev/null
+                else
+                    /etc/init.d/blue-merle-touch stop 2>/dev/null
+                    /etc/init.d/blue-merle-touch disable 2>/dev/null
+                fi
                 printf '{"saved":true}\n'
                 ;;
             *)

@@ -158,17 +158,19 @@ return view.extend({
 
         var wirelessSavedEl = E('span', { 'style': 'font-size:.82em;color:#1a7f3c;font-weight:normal' }, []);
         var imeiSavedEl     = E('span', { 'style': 'font-size:.82em;color:#1a7f3c;font-weight:normal' }, []);
+        var touchSavedEl    = E('span', { 'style': 'font-size:.82em;color:#1a7f3c;font-weight:normal' }, []);
         function flashSaved(el) {
             el.textContent = 'Saved ✓';
             setTimeout(function() { el.textContent = ''; }, 1500);
         }
 
-        function checkbox(label, key, checked) {
+        function checkbox(label, key, checked, savedEl) {
+            var _saved = savedEl || wirelessSavedEl;
             var cb = E('input', {
                 'type': 'checkbox', 'style': 'margin-right:6px',
                 'change': function() {
                     fs.exec(cmd, [ 'set:' + key + '=' + (cb.checked ? '1' : '0') ])
-                        .then(function() { flashSaved(wirelessSavedEl); })
+                        .then(function() { flashSaved(_saved); })
                         .catch(function(e) { console.error('set option failed:', e.message); });
                 }
             });
@@ -387,7 +389,14 @@ return view.extend({
                     radio('Static (manual)',             'imei_mode_slot2', 'static',        mode2 === 'static',        'imei_mode_slot2')
                 ]),
                 modeDesc2El,
-                staticImeiSection
+                staticImeiSection,
+                E('div', { 'style': 'font-size:.85em;font-weight:600;color:var(--text-color-high);border-bottom:1px solid var(--border-color-high);padding-bottom:3px;margin-bottom:8px;margin-top:12px;display:flex;align-items:center;justify-content:space-between' }, [ 'Touchscreen Trigger', touchSavedEl ]),
+                E('div', { 'style': 'margin-bottom:4px' }, [
+                    checkbox('Enable clock long-press to trigger SIM swap', 'touch_enabled', st.touch_enabled === '1', touchSavedEl)
+                ]),
+                E('div', { 'style': 'color:var(--text-color-medium);font-size:.82em;padding-left:1.5em' }, [
+                    'Hold the clock (top-left of screen) for 2 seconds to initiate a SIM swap.'
+                ])
             ]),
 
             // ── Actions ───────────────────────────────────────────────────────

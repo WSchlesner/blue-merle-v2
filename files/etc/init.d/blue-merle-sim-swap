@@ -45,6 +45,7 @@ _wait_for_at() {
 start() {
     [ -f /etc/blue-merle.sim-swap-pending ] || return 0
 
+    _screen_splash rotating
     _screen_msg "SIM swap: waiting for modem AT interface..."
     _wait_for_at || return 1
 
@@ -106,6 +107,7 @@ start() {
 
     logger -p notice -t blue-merle "sim-swap complete: slot1=$imei1 slot2=$imei2"
     _screen_msg "SIM swap: done. Registering with new identity..."
+    _screen_splash done
 }
 
 stop() { return 0; }

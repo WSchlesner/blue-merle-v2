@@ -250,10 +250,11 @@ _rotate() {
         return 1
     fi
 
+    _screen_splash rotating
     echo "  Slot 1 IMEI: $imei1"
     echo "  Slot 2 IMEI: $imei2"
 
-    SET_IMEIS "$imei1" "$imei2" || return 1
+    SET_IMEIS "$imei1" "$imei2" || { _screen_restore_display; return 1; }
 
     date '+%Y-%m-%d %H:%M (manual)' > /etc/blue-merle.last_imei_rotate
 
@@ -272,6 +273,9 @@ _rotate() {
             echo "blue-merle: done."
             echo "blue-merle: warning — modem did not re-register within 90s; check manually" >&2
         fi
+        _screen_splash done
+        sleep 2
+        _screen_restore_display
     fi
 }
 
@@ -362,6 +366,7 @@ case "$cmd" in
         echo "  After poweroff: remove battery, swap SIM(s), replace battery, power on."
         echo "  Final IMEIs will be written automatically on next boot."
         echo "  Change location before booting."
+        _screen_splash simswap
         sleep 5
         /sbin/poweroff
         ;;
@@ -380,6 +385,7 @@ case "$cmd" in
             exit 1
         fi
 
+        _screen_splash restoring
         echo "blue-merle: restoring factory IMEIs..."
         echo "  Slot 1: $_f_imei1"
         [ -n "$_f_imei2" ] && echo "  Slot 2: $_f_imei2"
@@ -387,11 +393,13 @@ case "$cmd" in
         MODEM_RF_DISABLE
         SET_IMEI_SLOT1 "$_f_imei1" || {
             echo "blue-merle: failed to restore slot 1 IMEI" >&2
+            _screen_restore_display
             exit 1
         }
         if [ -n "$_f_imei2" ]; then
             SET_IMEI_SLOT2 "$_f_imei2" || {
                 echo "blue-merle: failed to restore slot 2 IMEI" >&2
+                _screen_restore_display
                 exit 1
             }
         fi
@@ -478,6 +486,9 @@ case "$cmd" in
         echo "blue-merle: restore complete."
         echo "  Slot 1 IMEI: $(READ_IMEI)"
         echo "  Slot 2 IMEI: $(READ_IMEI_SLOT2)"
+        _screen_splash done
+        sleep 2
+        _screen_restore_display
         ;;
 
     *)

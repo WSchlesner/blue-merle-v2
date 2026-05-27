@@ -1,0 +1,17 @@
+{
+    "luci-app-blue-merle": {
+        "description": "Blue Merle privacy identity management",
+        "read": {
+            "file": {
+                "/usr/libexec/blue-merle": ["exec"],
+                "/usr/libexec/blue-merle *": ["exec"]
+            }
+        },
+        "write": {
+            "file": {
+                "/usr/libexec/blue-merle": ["exec"],
+                "/usr/libexec/blue-merle *": ["exec"]
+            }
+        }
+    }
+}

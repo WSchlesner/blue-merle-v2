@@ -1,0 +1,128 @@
+#!/bin/sh
+# blue-merle rpcd exec backend — called by LuCI2 via fs.exec().
+# Subcommands: status, rotate, rotate_wireless, restore, imsi, set:<key>=<val>, log
+
+_js() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+case "$1" in
+    status)
+        _imei1=$(gl_modem -B CPU -U 1 AT 'AT+EGMR=0,7' 2>/dev/null \
+                 | tr -d '\r' | grep -oE '[0-9]{15}' | head -1)
+        _imei2=$(gl_modem -B CPU -U 1 AT 'AT+EGMR=0,11' 2>/dev/null \
+                 | tr -d '\r' | grep -oE '[0-9]{15}' | head -1)
+        _ssid=$(uci -q get wireless.wifi2g.ssid 2>/dev/null)
+        _gssid=$(uci -q get wireless.guest2g.ssid 2>/dev/null)
+        _mac2g=$(uci -q get wireless.wifi2g.macaddr 2>/dev/null)
+        _mac5g=$(uci -q get wireless.wifi5g.macaddr 2>/dev/null)
+        _macsta=$(uci -q get wireless.sta.macaddr 2>/dev/null)
+        _mac6g=$(uci -q get wireless.wifi6g.macaddr 2>/dev/null)
+        _macguest2g=$(uci -q get wireless.guest2g.macaddr 2>/dev/null)
+        _macguest5g=$(uci -q get wireless.guest5g.macaddr 2>/dev/null)
+        _macguest6g=$(uci -q get wireless.guest6g.macaddr 2>/dev/null)
+        _host=$(uci -q get system.@system[0].hostname 2>/dev/null)
+        _key=$(uci -q get wireless.wifi2g.key 2>/dev/null)
+        _gkey=$(uci -q get wireless.guest2g.key 2>/dev/null)
+        _fi1=$(uci -q get blue-merle.factory.slot1_imei 2>/dev/null)
+        _fi2=$(uci -q get blue-merle.factory.slot2_imei 2>/dev/null)
+        _fssid=$(uci -q get blue-merle.factory.wifi2g_ssid 2>/dev/null)
+        _fgssid=$(uci -q get blue-merle.factory.guest_ssid 2>/dev/null)
+        _fhost=$(uci -q get blue-merle.factory.hostname 2>/dev/null)
+        _fmac2g=$(uci -q get blue-merle.factory.wifi2g_mac 2>/dev/null)
+        _fmac5g=$(uci -q get blue-merle.factory.wifi5g_mac 2>/dev/null)
+        _fmacsta=$(uci -q get blue-merle.factory.sta_mac 2>/dev/null)
+        _fmac6g=$(uci -q get blue-merle.factory.wifi6g_mac 2>/dev/null)
+        _fmacguest2g=$(uci -q get blue-merle.factory.guest2g_mac 2>/dev/null)
+        _fmacguest5g=$(uci -q get blue-merle.factory.guest5g_mac 2>/dev/null)
+        _fmacguest6g=$(uci -q get blue-merle.factory.guest6g_mac 2>/dev/null)
+        _fkey=$(uci -q get blue-merle.factory.wifi2g_key 2>/dev/null)
+        _fgkey=$(uci -q get blue-merle.factory.guest2g_key 2>/dev/null)
+        _opt_mac=$(uci -q get blue-merle.options.randomize_mac 2>/dev/null)
+        _opt_ssid=$(uci -q get blue-merle.options.randomize_ssid 2>/dev/null)
+        _opt_host=$(uci -q get blue-merle.options.randomize_hostname 2>/dev/null)
+        _opt_pass=$(uci -q get blue-merle.options.randomize_password 2>/dev/null)
+        _opt_boot=$(uci -q get blue-merle.options.randomize_on_boot 2>/dev/null)
+        _opt_mode1=$(uci -q get blue-merle.options.imei_mode_slot1 2>/dev/null)
+        _opt_mode2=$(uci -q get blue-merle.options.imei_mode_slot2 2>/dev/null)
+        _sst1=$(uci -q get blue-merle.options.static_imei_slot1 2>/dev/null)
+        _sst2=$(uci -q get blue-merle.options.static_imei_slot2 2>/dev/null)
+        _last_imei_rotate=$(cat /etc/blue-merle.last_imei_rotate 2>/dev/null)
+        _last_wireless_rotate=$(cat /etc/blue-merle.last_wireless_rotate 2>/dev/null)
+        _installed=$([ -n "$_fi1" ] && printf true || printf false)
+        printf '{"imei1":"%s","imei2":"%s","ssid":"%s","guest_ssid":"%s","mac_2g":"%s","mac_5g":"%s","mac_6g":"%s","mac_sta":"%s","mac_guest2g":"%s","mac_guest5g":"%s","mac_guest6g":"%s","hostname":"%s","wifi2g_key":"%s","guest2g_key":"%s","factory_i1":"%s","factory_i2":"%s","factory_ssid":"%s","factory_guest_ssid":"%s","factory_host":"%s","factory_mac_2g":"%s","factory_mac_5g":"%s","factory_mac_6g":"%s","factory_mac_sta":"%s","factory_mac_guest2g":"%s","factory_mac_guest5g":"%s","factory_mac_guest6g":"%s","factory_wifi2g_key":"%s","factory_guest2g_key":"%s","opt_mac":"%s","opt_ssid":"%s","opt_hostname":"%s","opt_password":"%s","opt_boot":"%s","imei_mode_slot1":"%s","imei_mode_slot2":"%s","static_imei_slot1":"%s","static_imei_slot2":"%s","last_imei_rotate":"%s","last_wireless_rotate":"%s","installed":%s}\n' \
+            "${_imei1:----}" "${_imei2:----}" \
+            "$(_js "${_ssid:----}")" "$(_js "${_gssid:----}")" \
+            "${_mac2g:----}" "${_mac5g:----}" "${_mac6g:----}" "${_macsta:----}" \
+            "${_macguest2g:----}" "${_macguest5g:----}" "${_macguest6g:----}" \
+            "$(_js "${_host:----}")" \
+            "$(_js "${_key:----}")" "$(_js "${_gkey:----}")" \
+            "${_fi1:----}" "${_fi2:----}" \
+            "$(_js "${_fssid:----}")" "$(_js "${_fgssid:----}")" \
+            "$(_js "${_fhost:----}")" \
+            "${_fmac2g:----}" "${_fmac5g:----}" "${_fmac6g:----}" "${_fmacsta:----}" \
+            "${_fmacguest2g:----}" "${_fmacguest5g:----}" "${_fmacguest6g:----}" \
+            "$(_js "${_fkey:----}")" "$(_js "${_fgkey:----}")" \
+            "${_opt_mac:-1}" "${_opt_ssid:-1}" "${_opt_host:-1}" "${_opt_pass:-1}" \
+            "${_opt_boot:-1}" \
+            "${_opt_mode1:-random}" "${_opt_mode2:-random}" \
+            "${_sst1}" "${_sst2}" \
+            "$(_js "${_last_imei_rotate}")" \
+            "$(_js "${_last_wireless_rotate}")" \
+            "$_installed"
+        ;;
+    rotate)
+        : > /tmp/blue-merle.log
+        /usr/bin/blue-merle rotate >> /tmp/blue-merle.log 2>&1 &
+        printf '{"started":true}\n'
+        ;;
+    rotate_wireless)
+        : > /tmp/blue-merle.log
+        /usr/bin/blue-merle rotate-wireless >> /tmp/blue-merle.log 2>&1 &
+        printf '{"started":true}\n'
+        ;;
+    restore)
+        : > /tmp/blue-merle.log
+        /usr/bin/blue-merle restore >> /tmp/blue-merle.log 2>&1 &
+        printf '{"started":true}\n'
+        ;;
+    imsi)
+        _slot_imsi() {
+            local _raw _imsi _cpin
+            _raw=$(gl_modem -B CPU -U "$1" AT AT+CIMI 2>/dev/null | tr -d '\r')
+            _imsi=$(printf '%s' "$_raw" | grep -E '^[0-9]{6,15}$' | head -1)
+            if [ -n "$_imsi" ]; then
+                printf '%s' "$_imsi"; return
+            fi
+            _cpin=$(gl_modem -B CPU -U "$1" AT 'AT+CPIN?' 2>/dev/null \
+                    | tr -d '\r' | grep -E '^\+CPIN:' | head -1)
+            [ -n "$_cpin" ] && printf '__failed__'
+        }
+        _imsi1=$(_slot_imsi 1)
+        _imsi2=$(_slot_imsi 2)
+        printf '{"slot1":"%s","slot2":"%s"}\n' "$_imsi1" "$_imsi2"
+        ;;
+    set:*)
+        _kv="${1#set:}"
+        _key="${_kv%%=*}"
+        _val="${_kv#*=}"
+        case "$_key" in
+            randomize_mac|randomize_ssid|randomize_hostname|randomize_password|randomize_on_boot|imei_mode_slot1|imei_mode_slot2|static_imei_slot1|static_imei_slot2)
+                uci -q get blue-merle.options >/dev/null 2>&1 \
+                    || uci -q set blue-merle.options=blue-merle
+                uci -q set "blue-merle.options.${_key}=${_val}"
+                uci -q commit blue-merle
+                printf '{"saved":true}\n'
+                ;;
+            *)
+                printf '{"error":"unknown option"}\n'
+                exit 1
+                ;;
+        esac
+        ;;
+    log)
+        cat /tmp/blue-merle.log 2>/dev/null
+        ;;
+    *)
+        printf '{"error":"unknown command"}\n'
+        exit 1
+        ;;
+esac

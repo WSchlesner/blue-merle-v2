@@ -1,0 +1,13 @@
+{
+    "admin/services/blue_merle": {
+        "title": "Blue Merle",
+        "order": 90,
+        "action": {
+            "type": "view",
+            "path": "blue_merle"
+        },
+        "depends": {
+            "acl": ["luci-app-blue-merle"]
+        }
+    }
+}

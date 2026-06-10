@@ -1,6 +1,7 @@
 # Blue Merle v2
 
-[![Build](https://github.com/WSchlesner/blue-merle-v2/actions/workflows/build.yml/badge.svg)](https://github.com/WSchlesner/blue-merle-v2/actions/workflows/build.yml)
+[![Build (script)](https://github.com/WSchlesner/blue-merle-v2/actions/workflows/build.yml/badge.svg)](https://github.com/WSchlesner/blue-merle-v2/actions/workflows/build.yml)
+[![Build (SDK)](https://github.com/WSchlesner/blue-merle-v2/actions/workflows/sdk-build.yml/badge.svg)](https://github.com/WSchlesner/blue-merle-v2/actions/workflows/sdk-build.yml)
 [![License: GPL-2.0](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](#license)
 [![Platform](https://img.shields.io/badge/platform-GL--E5800%20(Mudi%207)-orange.svg)](#compatibility)
 
@@ -393,16 +394,30 @@ Needs only `bash`, `tar`, and `gzip`. Produces `blue-merle-v2-1.0.0-local.ipk` f
 A standard OpenWrt package recipe that compiles `src/blue-merle-touch.c` from source (no committed-binary trust required):
 
 ```sh
-# inside an SDK for target qualcommax/ipq9574
+# Use the 23.05.4 ipq807x/generic SDK — the same OpenWrt release the GL-E5800
+# firmware is based on, and the same aarch64_cortex-a53 musl ABI. (The
+# GL-E5800's IPQ9574 SoC has no upstream stable SDK of its own; any 23.05.4
+# aarch64_cortex-a53 target produces an identical package.)
+curl -fLO https://downloads.openwrt.org/releases/23.05.4/targets/ipq807x/generic/openwrt-sdk-23.05.4-ipq807x-generic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+tar -xJf openwrt-sdk-23.05.4-*.tar.xz && cd openwrt-sdk-23.05.4-*/
+
 ln -s /path/to/blue-merle-v2 package/blue-merle-v2
+make defconfig
 make package/blue-merle-v2/compile V=s
 ```
 
 Output: `bin/packages/aarch64_cortex-a53/base/blue-merle-v2_1.0.0-1_aarch64_cortex-a53.ipk`. **Use for:** reproducible/auditable builds or opkg feed submission.
 
-### 3. GitHub Actions
+### 3. GitHub Actions — both build paths, automatically
 
-[`build.yml`](.github/workflows/build.yml) runs `build-ipk.sh` on every push and PR (artifact retained 30 days) and publishes a GitHub Release on every `v*.*.*` tag:
+Two workflows run on every push, PR, and release tag:
+
+| Workflow | What it does | Output |
+|---|---|---|
+| [`build.yml`](.github/workflows/build.yml) | Fast path — runs `build-ipk.sh` (bundles the pre-compiled touch daemon) | `blue-merle-v2-<version>-{ci\|release}.ipk` |
+| [`sdk-build.yml`](.github/workflows/sdk-build.yml) | Downloads the pinned 23.05.4 SDK (checksum-verified) and compiles everything from source via the `Makefile` | `blue-merle-v2_<version>-SDK-{CI\|Release}.ipk` |
+
+Both upload their IPK as a workflow artifact (retained 30 days). On a `v*.*.*` tag, a GitHub Release is created with **both** IPKs attached — the SDK build is the fully-from-source option:
 
 ```sh
 git tag v1.1.0 && git push origin v1.1.0

@@ -1,0 +1,99 @@
+# Builds the package with the official OpenWrt SDK — compiles blue-merle-touch
+# from src/ for the target arch instead of bundling the pre-built binary that
+# build.yml ships. Both IPKs are attached to releases so users can choose the
+# fully-from-source build.
+#
+# SDK: 23.05.4 ipq807x/generic — the same OpenWrt release the GL-E5800
+# firmware is based on, and the same aarch64_cortex-a53 musl ABI. (The
+# GL-E5800's own IPQ9574 SoC has no upstream stable SDK; any 23.05.4
+# aarch64_cortex-a53 target produces an identical package.)
+#
+# Compared to blue-merle v1's CI: same approach (SDK + package symlink +
+# defconfig + compile), but no `scripts/feeds update` and no `make
+# package/index` — our package is self-contained and we ship a single
+# release IPK rather than an opkg feed, so neither step is needed.
+name: Build (SDK)
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: sdk-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SDK_NAME: openwrt-sdk-23.05.4-ipq807x-generic_gcc-12.3.0_musl.Linux-x86_64
+  SDK_URL: https://downloads.openwrt.org/releases/23.05.4/targets/ipq807x/generic/openwrt-sdk-23.05.4-ipq807x-generic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+  SDK_SHA256: a7c09ce14e4bbe71f7f7eabb79a382f89cb808364b4d436c3d604497147bdb1b
+
+jobs:
+  sdk-build:
+    name: Build IPK (OpenWrt SDK)
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: blue-merle-v2
+
+      - name: Cache SDK tarball
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: sdk.tar.xz
+          key: ${{ env.SDK_NAME }}
+
+      - name: Download SDK
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: curl -fL "$SDK_URL" -o sdk.tar.xz
+
+      - name: Verify and extract SDK
+        run: |
+          echo "${SDK_SHA256}  sdk.tar.xz" | sha256sum -c -
+          mkdir -p sdk
+          tar -xJf sdk.tar.xz -C sdk --strip-components=1
+
+      - name: Build package
+        run: |
+          ln -s "$GITHUB_WORKSPACE/blue-merle-v2" sdk/package/blue-merle-v2
+          cd sdk
+          make defconfig
+          make package/blue-merle-v2/compile V=s -j"$(nproc)"
+
+      # The SDK names its output opkg-style (blue-merle-v2_1.0.0-1_<arch>.ipk);
+      # rename it so the build path is obvious next to the script-built asset.
+      - name: Collect IPK
+        run: |
+          VERSION="$(sed -n 's/^PKG_VERSION:=//p' blue-merle-v2/Makefile)"
+          case "${GITHUB_REF}" in
+            refs/tags/v*) SUFFIX="SDK-Release" ;;
+            *)            SUFFIX="SDK-CI" ;;
+          esac
+          SRC="$(find sdk/bin -name 'blue-merle-v2*.ipk' | head -1)"
+          test -n "$SRC"
+          cp -v "$SRC" "blue-merle-v2_${VERSION}-${SUFFIX}.ipk"
+          ls -la ./*.ipk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: blue-merle-v2-sdk-${{ github.ref_name }}-${{ github.sha }}
+          path: "*.ipk"
+          retention-days: 30
+
+      # The script-build workflow creates the release (it finishes first);
+      # this step attaches the SDK-built IPK to the same tag.
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "*.ipk"
+          fail_on_unmatched_files: true

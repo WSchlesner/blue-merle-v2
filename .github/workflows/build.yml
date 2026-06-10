@@ -1,5 +1,9 @@
-name: Build
+name: Build (script)
 
+# Fast path: assembles the IPK with build-ipk.sh (bundles the pre-compiled
+# blue-merle-touch binary). The companion sdk-build.yml workflow compiles the
+# daemon from source with the OpenWrt SDK; releases carry both IPKs.
+#
 # No paths-ignore filters: their interaction with tag pushes is unreliable
 # and a skipped build on a release tag would publish nothing. The build takes
 # seconds, so README-only pushes rebuilding is an acceptable cost.

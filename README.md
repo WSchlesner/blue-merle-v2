@@ -1,6 +1,58 @@
-# blue-merle v2 — GL-iNet Mudi 7 (GL-E5800)
+# Blue Merle v2
 
-A port of [SRLabs' blue-merle](https://github.com/srlabs/blue-merle) from the original Mudi (GL-E750) to the Mudi 7 (GL-E5800). The Mudi 7 ships with a completely different modem, a rewritten `gl_modem` wrapper, dual SIM + eSIM support, and no hardware switch — so this is a ground-up rewrite, not a patch.
+[![Build](https://github.com/WSchlesner/blue-merle-v2/actions/workflows/build.yml/badge.svg)](https://github.com/WSchlesner/blue-merle-v2/actions/workflows/build.yml)
+[![License: GPL-2.0](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](#license)
+[![Platform](https://img.shields.io/badge/platform-GL--E5800%20(Mudi%207)-orange.svg)](#compatibility)
+
+**Anonymity enhancements for the GL-iNet GL-E5800 (Mudi 7) 5G mobile hotspot** — dual-slot IMEI rotation, MAC/BSSID/SSID/hostname/password randomization, a two-stage SIM-swap flow, and volatile client-MAC storage, controlled from the command line, a LuCI admin page, or the device's touchscreen.
+
+A ground-up rewrite of [SRLabs' blue-merle](https://github.com/srlabs/blue-merle) for the Mudi 7. The original targeted the GL-E750 Mudi; the Mudi 7 ships with a completely different modem (Quectel RG650V-NA, integrated MHI instead of USB), a rewritten `gl_modem` wrapper, dual SIM + eSIM support, a touchscreen instead of a hardware switch, and a new UCI layout — so nothing of v1 survived unchanged.
+
+> **Legal note:** changing your device's IMEI is restricted or unlawful in some jurisdictions. This software is provided for lawful privacy research and personal use where permitted. You are responsible for compliance with your local laws.
+
+<!-- ──────────────────────────────────────────────────────────────────────────
+     MEDIA CAPTURE CHECKLIST — drop files into assets/ with these exact names,
+     then delete each placeholder comment where the file is referenced below:
+
+       assets/screenshots/luci-admin-page.png      ✅ captured
+       assets/screenshots/gl-about-device.png      — GL-iNet UI: Settings → About Device showing a rotated IMEI
+       assets/screenshots/device-rotating.jpg      — Mudi 7 screen: blue "Rotating..." splash
+       assets/screenshots/device-done.jpg          — Mudi 7 screen: green "Done" splash
+       assets/screenshots/device-simswap.jpg       — Mudi 7 screen: amber "SIM Swap" splash
+       assets/screenshots/device-warning.jpg       — Mudi 7 screen: orange "Warning" splash
+       assets/videos/touchscreen-trigger.gif       — 2 s clock long-press triggering a SIM swap (GIF embeds inline on GitHub)
+       assets/videos/sim-swap-flow.mp4             — optional: full two-stage SIM-swap walkthrough (link, not embedded)
+     ────────────────────────────────────────────────────────────────────── -->
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Compatibility](#compatibility)
+- [Quick Start](#quick-start)
+- [Usage](#usage)
+  - [LuCI admin page](#luci-admin-page)
+  - [Command line](#command-line)
+  - [Touchscreen trigger](#touchscreen-trigger)
+  - [Health check](#health-check)
+- [How It Works](#how-it-works)
+  - [What it protects (and what it can't)](#what-it-protects-and-what-it-cant)
+  - [Boot sequence](#boot-sequence)
+  - [IMEI rotation](#imei-rotation)
+  - [IMEI modes](#imei-modes)
+  - [SIM-swap flow](#sim-swap-flow)
+  - [MAC, BSSID, and SSID randomization](#mac-bssid-and-ssid-randomization)
+  - [Volatile client MACs](#volatile-client-macs)
+  - [Splash screens](#splash-screens)
+- [Configuration Reference](#configuration-reference)
+- [Building from Source](#building-from-source)
+- [Uninstalling](#uninstalling)
+- [AT Commands We Deliberately Avoid](#at-commands-we-deliberately-avoid)
+- [Project Status](#project-status)
+- [Repository Layout](#repository-layout)
+- [Acknowledgements](#acknowledgements)
+- [License](#license)
 
 ---
 
@@ -8,347 +60,357 @@ A port of [SRLabs' blue-merle](https://github.com/srlabs/blue-merle) from the or
 
 | Feature | Description |
 |---|---|
-| **Dual IMEI rotation** | Randomize both modem IMEI slots independently on every SIM swap |
-| **Three IMEI modes** | Per-slot: **Random** (Luhn-valid, band-matched TAC), **Deterministic** (stable hash of IMSI), or **Static** (fixed value) |
-| **Wireless rotation** | Randomize BSSID/MAC, SSID, hostname, and Wi-Fi password |
-| **SIM-Swap** | Two-stage boot flow — throwaway IMEI written at shutdown, final IMEI written before first network attach on next boot |
-| **Volatile Client MACs** | `tmpfs` over GL-iNet's client MAC database — device history never hits flash |
-| **Boot-time rotation** | Optional auto-rotate on every boot |
-| **Touchscreen trigger** | 2-second hold on the screen clock initiates SIM swap without SSH |
-| **LuCI admin page** | Browser UI under Services → blue-merle |
-| **GL-iNet UI sync** | Settings → About Device → IMEI updates automatically after rotation |
+| **Dual IMEI rotation** | Both modem IMEI slots (SIM 1 + SIM 2/eSIM) rotated independently via `AT+EGMR`, persisted to modem NV |
+| **Three IMEI modes** | Per-slot: **Random** (Luhn-valid, band-matched TAC), **Deterministic** (stable hash of the SIM's IMSI), or **Static** (user-supplied) |
+| **Consistent wireless identity** | One router vendor per rotation: all BSSIDs share a single OUI and the SSID broadcasts a matching brand name — no impossible vendor mixes |
+| **Wireless rotation** | BSSIDs/MACs, SSID, hostname, and Wi-Fi passwords randomized on demand or on every boot |
+| **Two-stage SIM swap** | Throwaway IMEIs written before poweroff; final IMEIs written on next boot *before* the modem first attaches — neither real identity bridges the swap |
+| **Volatile client MACs** | `tmpfs` mounted over GL-iNet's client-MAC database — connected-device history never reaches flash |
+| **Network visibility** | Per-slot registration state, operator, and signal in both the CLI and LuCI |
+| **Health check** | `blue-merle check` — 16-point read-only self-test of the modem, generator, frames, and services |
+| **Three control surfaces** | CLI over SSH, LuCI admin page, and a 2-second touchscreen long-press for SIM swap |
+| **GL-iNet UI sync** | Settings → About Device shows the new IMEI automatically after every rotation |
+| **Splash screens** | Six full-screen status frames written straight to the framebuffer during operations |
 
 ---
 
 ## Compatibility
 
-- **Device:** GL-iNet GL-E5800 (Mudi 7)
-- **Firmware:** GL.iNet 4.8.3 (OpenWrt 23.05.4)
-- **Tested modem firmware:** `RG650VNA01ACR02A04G8G`
-- **Architecture:** `aarch64_cortex-a53`
+| | |
+|---|---|
+| **Device** | GL-iNet GL-E5800 (Mudi 7) |
+| **Firmware** | GL.iNet 4.8.3 (OpenWrt 23.05.4) and 4.8.5 |
+| **Modem firmware** | `RG650VNA01ACR02A04G8G` (unchanged between 4.8.3 and 4.8.5) |
+| **Architecture** | `aarch64_cortex-a53` |
+| **Dependencies** | `luci-base`, `lua`, `luabitop` — all present in stock firmware |
+
+The installer verifies the device model and firmware version before touching anything. Unknown firmware versions prompt for confirmation (interactive SSH installs only; non-interactive installs on unknown firmware abort safely).
+
+> **Firmware upgrades remove the package without running its uninstall hooks.** Factory state survives in `/etc/config/blue-merle`, but the modem keeps its rotated IMEIs and GL-iNet's own BSSID randomization stays disabled until you reinstall blue-merle (or restore manually). Reinstall after every firmware upgrade.
 
 ---
 
-## Prerequisites
+## Quick Start
 
-LuCI must be enabled before installing. GL-iNet ships it bundled but off by default.
+**1. Enable LuCI** (bundled with the firmware, off by default — no internet required):
 
 1. Open the GL-iNet web UI at `http://192.168.8.1`
 2. Go to **System → Advanced Settings**
-3. Click **Install Now** — this just starts the `uhttpd` web server, no internet needed
-4. LuCI will be at `http://192.168.8.1/cgi-bin/luci`
+3. Click **Install Now** — this just starts the `uhttpd` web server
+4. LuCI is now at `http://192.168.8.1:8080`
 
----
-
-## Installation
+**2. Install the package:**
 
 ```sh
-scp blue-merle_1.0.0-1_aarch64_cortex-a53.ipk root@192.168.8.1:/tmp/
-ssh root@192.168.8.1 opkg install --force-reinstall /tmp/blue-merle_1.0.0-1_aarch64_cortex-a53.ipk
+scp -O blue-merle-v2-1.0.0-local.ipk root@192.168.8.1:/tmp/
+ssh root@192.168.8.1 opkg install /tmp/blue-merle-v2-1.0.0-local.ipk
 ```
 
 Expected output:
 
 ```
-Installing blue-merle (1.0.0-1) to root...
-Configuring blue-merle.
-blue-merle: saving factory state...
-  Factory IMEI slot1: 352000067890125
-  Factory IMEI slot2: 352000067890133
-  Factory SSID: GL-E5800-1A2B
-  Factory hostname: GL-E5800
-  Factory MAC (2.4 GHz): A8:22:42:1A:2B:3C
-  Factory MAC (5 GHz): A8:22:42:1A:2B:3B
-  ...
-  STA MAC saved: 3A:47:9F:0C:11:82
-blue-merle: factory state saved.
-blue-merle: disabling GL-iNet BSSID randomization...
+Installing blue-merle-v2 (1.0.0) to root...
+Firmware 4.8.5 confirmed supported.
+Configuring blue-merle-v2.
+blue-merle: capturing factory state...
+  IMEI (slot 1):   352000067890125
+  IMEI (slot 2):   352000067890133
+  WiFi MAC (2.4g): a8:22:42:1a:2b:3c
+  SSID:            GL-E5800-1a2b
+  Hostname:        GL-E5800
+  WiFi keys saved: main + guest
+blue-merle: factory state saved to /etc/config/blue-merle
+blue-merle: installation complete. Rotate identity via: blue-merle rotate
 ```
 
-The admin page is available under **Services → blue-merle** in LuCI after install.
+The original device identity is captured **once** at install time and is never overwritten — reinstalls and upgrades (`opkg install --force-reinstall`) preserve it.
 
-### Reinstalling / upgrading
+**3. Verify and rotate:**
 
-Use the same command with `--force-reinstall`. Factory values are preserved on reinstall — the installer won't overwrite an existing factory record.
+```sh
+ssh root@192.168.8.1
+blue-merle check     # everything should PASS
+blue-merle rotate    # first identity rotation
+```
+
+The admin page is under **Services → Blue Merle** in LuCI.
 
 ---
 
 ## Usage
 
-### LuCI page
+### LuCI admin page
 
-Navigate to **Services → blue-merle**. The page has five sections:
+**Services → Blue Merle** (`http://192.168.8.1:8080`):
 
-#### IMEI
+![Blue Merle LuCI admin page](assets/screenshots/luci-admin-page.png)
 
-Live IMEI state for both modem slots:
+| Section | Contents |
+|---|---|
+| **IMEI** | Current vs. factory IMEI per slot, IMSI, and live network state (registration / operator / signal — loaded asynchronously). Rotated values are highlighted green. |
+| **Wireless/System Identity** | Current vs. factory SSID, all nine MACs/BSSIDs, hostname, and the main/guest Wi-Fi passwords (masked, with Show/Hide). |
+| **Rotation Options** | Boot-rotation master toggle + per-feature checkboxes; per-slot IMEI mode radios (Random / Deterministic / Static) with inline-validated static IMEI fields; re-attach timeout; touchscreen trigger toggle. Every control saves instantly with a ✓ flash. |
+| **Actions** | Rotate IMEIs, Rotate Wireless/System, SIM Swap (double-confirmed — powers the device off), Restore Factory. Last-rotation timestamps below. |
+| **Last Command Log** | Output of the most recent operation (`/tmp/blue-merle.log`). |
 
-- **IMEI (Slot 1 / Slot 2)** — current values read via `AT+EGMR`; factory values shown alongside for reference
-- **IMSI (Slot 1 / Slot 2)** — read from the modem; shows "No SIM Detected" when empty
-
-Per-slot IMEI mode selectors (Radio buttons: Random / Deterministic / Static). Static mode reveals a text field for a specific IMEI, validated for Luhn checksum before writing.
-
-#### Wireless/System Identity
-
-Live MAC/SSID/hostname state:
-
-- **SSID / Guest SSID, MACs, Hostname** — current values from UCI
-- **Factory values** — saved at install time, shown for reference
-
-#### Rotation Options
-
-Three sub-sections, each with its own inline **Saved ✓** indicator:
-
-**Wireless / System Rotation**
-- "Randomize identity on boot" master toggle (auto-rotate every boot via the S10 init.d service)
-- Independent checkboxes: BSSIDs/MACs, SSID, Wi-Fi password, Hostname
-
-**IMEI Rotation**
-- Mode radios per slot (Random / Deterministic / Static)
-
-**Touchscreen Trigger**
-- Enable/disable the clock long-press SIM swap trigger (persisted via init.d enable/disable)
-
-#### Actions
-
-- **Rotate IMEIs** — generates new IMEIs per configured mode, writes via `AT+EGMR`, cycles RF (`AT+CFUN=4 → AT+CFUN=1`), restarts `gl_cellular_manager`. Settings → About Device updates automatically.
-- **Rotate Wireless/System** — randomizes MACs/SSID/hostname/password immediately via `wifi reload`
-- **Restore Factory** — reverts everything to the factory values captured at install time
-- Last IMEI rotate and last wireless rotate timestamps (shows "Never" until first use)
-
-#### Last Command Log
-
-Streams the tail of `/tmp/blue-merle.log` — live output from the last operation.
-
-<!-- SCREENSHOT: Replace the lines below with actual screenshots once captured -->
-<!-- Upload to assets/screenshots/ and update the image paths -->
-
-> **Photos needed:**
-> - `assets/screenshots/luci-overview.png` — Full LuCI page overview (Services → blue-merle)
-> - `assets/screenshots/luci-imei.png` — IMEI section showing both slots + IMSI
-> - `assets/screenshots/luci-rotation-options.png` — Rotation Options with all sub-sections visible
-> - `assets/screenshots/luci-actions.png` — Actions section with rotate/restore buttons + timestamps
-
----
-
-### CLI
+### Command line
 
 ```sh
-blue-merle rotate            # rotate IMEI (both slots, per configured mode)
-blue-merle rotate-wireless   # rotate MACs / SSID / hostname / password
-blue-merle restore           # restore all factory values
-blue-merle sim-swap          # prep for SIM swap — writes throwaway IMEI then powers off
-blue-merle status            # print current identity
-blue-merle install           # re-run first-install setup (idempotent)
+blue-merle status            # identity + network registration overview
+blue-merle check             # health check (see below)
+blue-merle rotate            # rotate both IMEIs, cycle RF, wait for re-attach
+blue-merle rotate-wireless   # rotate MACs/SSID/hostname/password immediately
+blue-merle sim-swap          # stage 1 of the SIM-swap flow (powers off!)
+blue-merle restore           # restore every factory value
+blue-merle install           # (re-)capture factory state — idempotent
+blue-merle help              # full usage, including per-slot mode flags
 ```
 
-Example `rotate` output:
+Per-slot IMEI modes can be set for a single run (`--slot1=deterministic --slot2=random`, or `--random`/`--deterministic`/`--static` for both) — invalid modes and unknown options fail loudly rather than silently falling back. Persistent mode defaults live in UCI (see [Configuration Reference](#configuration-reference)).
+
+Example `rotate`:
 
 ```
-blue-merle: generating IMEIs...
-  slot1 mode: random  →  new IMEI: 354491081234567
-  slot2 mode: random  →  new IMEI: 860371059876543
-blue-merle: writing IMEIs...
-blue-merle: resetting modem for privacy...
+blue-merle: disabling RF before IMEI write...
+blue-merle: generating IMEIs (slot1=random, slot2=random)...
+  Slot 1 IMEI: 354491081234567
+  Slot 2 IMEI: 860371059876543
+  Slot 1 IMEI confirmed: 354491081234567
+  Slot 2 IMEI confirmed: 860371059876543
+blue-merle: cycling modem RF for network re-attach...
 blue-merle: done.
 ```
 
-Example `sim-swap` output:
+`status` includes a Network section — the first place to look when a SIM won't connect:
 
 ```
-blue-merle: preparing for SIM swap...
-blue-merle: writing throwaway IMEIs...
-blue-merle: powering off. Swap your SIM and power back on.
+=== Network ===
+  Slot 1 registration: registered (home)
+  Slot 2 registration: not registered (idle)
+  Operator: T-Mobile
+  Signal:   -77 dBm
 ```
 
-Stage 2 runs automatically on the next boot and writes the final IMEIs before the modem first attaches.
-
----
+<!-- PLACEHOLDER: assets/screenshots/gl-about-device.png — GL-iNet UI Settings → About Device
+     showing the rotated IMEI, captioned "GL-iNet's own UI reflects the rotated IMEI automatically." -->
 
 ### Touchscreen trigger
 
-Hold the **clock in the top-left corner** of the home screen for **2 seconds** to initiate a SIM swap — identical to running `blue-merle sim-swap` from SSH.
+Hold the **clock in the top-left corner** of the home screen for **2 seconds** to start a SIM swap — identical to running `blue-merle sim-swap` over SSH, no laptop needed.
 
-The `blue-merle-touch` daemon starts at S81, reads `/dev/input/event0` without grabbing the device (so `gl_screen` continues operating normally), and watches for a 2-second hold in the clock region (`X: 0–80, Y: 0–30`).
+The `blue-merle-touch` daemon (a 350 KB statically linked C binary, source in `src/`) reads `/dev/input/event0` without grabbing it, so the stock `gl_screen` UI keeps working normally. Guards against accidental triggers:
 
-**Guards preventing accidental triggers:**
-- 2-second hold required (quick taps are logged and ignored)
-- 10-second cooldown between consecutive triggers
-- Blocked if a sim-swap stage file is already present
+- 2-second hold required — quick taps are logged and ignored
+- 10-second cooldown between triggers
+- Blocked while a sim-swap is already in progress (stage file present)
 
-**Toggle (persists across reboots):**  
-LuCI → Services → Blue Merle → Rotation Options → **Touchscreen Trigger** checkbox.  
-Or via SSH: `/etc/init.d/blue-merle-touch disable && /etc/init.d/blue-merle-touch stop`
+Toggle it (persists across reboots and reinstalls) from LuCI → Rotation Options → **Touchscreen Trigger**, or over SSH: `/etc/init.d/blue-merle-touch disable && /etc/init.d/blue-merle-touch stop`.
+
+<!-- PLACEHOLDER: assets/videos/touchscreen-trigger.gif — short GIF of the 2 s clock long-press
+     and the SIM Swap splash appearing. GIFs embed inline on GitHub; an .mp4 can be linked too. -->
+
+### Health check
+
+`blue-merle check` is a read-only self-test — run it any time something seems off, or after a firmware update:
+
+```
+=== blue-merle health check ===
+
+Modem:
+  PASS  gl_modem present
+  PASS  AT socket present (/tmp/modem.CPU.AT.sock)
+  PASS  modem answers AT commands
+  PASS  IMEI readable (slot 1: 016841000137066)
+
+IMEI generator:
+  PASS  lua generator produces valid IMEIs (sample: 356767107342622)
+  PASS  TAC pool present (7 TACs)
+  PASS  OUI pool present (20 router identities)
+
+Splash frames:
+  PASS  all 6 frames present
+  PASS  framebuffer present (/dev/fb0)
+
+Services:
+  PASS  blue-merle-volatile-macs enabled
+  PASS  blue-merle-wireless enabled
+  PASS  blue-merle-sim-swap enabled
+  PASS  blue-merle-touch enabled and running
+  PASS  client-MAC database is RAM-backed (tmpfs mounted)
+
+State:
+  PASS  factory state saved
+
+Result: all checks passed.
+```
+
+Exit code is non-zero if anything FAILs, so it can be scripted.
 
 ---
 
 ## How It Works
 
+### What it protects (and what it can't)
+
+Blue Merle reduces the **device-identity** trail a mobile hotspot leaves behind: the IMEI broadcast to cell towers, the Wi-Fi MACs/BSSIDs/SSID visible to anyone scanning nearby, the hostname, and the on-flash history of clients that connected. It cannot anonymize what it doesn't control:
+
+- **The SIM is an identity.** The IMSI/ICCID identify the subscriber regardless of IMEI. Rotating the IMEI without swapping the SIM only unlinks the *hardware*; use the SIM-swap flow (new SIM + new IMEI + new location, together) for a clean break.
+- **Location and usage patterns correlate.** Re-appearing in the same place, at the same times, with the same traffic patterns can re-link identities no rotation can hide.
+- **Upstream traffic is out of scope.** Use a VPN/Tor on top; blue-merle handles the radio identity layer only.
+
+The deterministic IMEI mode trades unlinkability for consistency — see [IMEI modes](#imei-modes).
+
 ### Boot sequence
 
 | Priority | Service | What it does |
 |---|---|---|
-| S9 | `blue-merle-volatile-macs` | Mounts a `tmpfs` over `/etc/oui-tertf` — the directory GL-iNet's `gl_clients` binary uses to store its persistent MAC history database. All client history is written to RAM and discarded on every reboot. |
-| S10 | `blue-merle-wireless` | If `randomize_on_boot=1`: rotates MACs, SSID, hostname, and Wi-Fi password before the AP comes up. |
-| S23 | `gl_cellular_manager` | GL-iNet's modem init daemon. This is the first point in the boot sequence where the AT socket accepts commands. |
-| S25 | `blue-merle-sim-swap` | If `/etc/blue-merle.sim-swap-pending` exists (left by Stage 1): waits for the AT socket, disables RF (`AT+CFUN=4`), writes the final IMEIs, re-enables RF (`AT+CFUN=1`). No reboot needed — `gl_cellular_manager` handles carrier registration from here with the correct identity. |
+| S9 | `blue-merle-volatile-macs` | Mounts `tmpfs` over `/etc/oui-tertf/` before GL-iNet's client tracker starts — the client-MAC database lives in RAM and evaporates at every reboot. |
+| S10 | `blue-merle-wireless` | If boot rotation is enabled: rotates MACs, SSID, hostname, and Wi-Fi passwords *before* the APs come up. |
+| S23 | `gl_cellular_manager` | GL-iNet's modem init daemon — the first point in boot where the AT socket accepts commands. |
+| S25 | `blue-merle-sim-swap` | Only when a sim-swap is pending: waits for the AT socket, disables RF, writes the final IMEIs, re-enables RF. The throwaway IMEI from Stage 1 is replaced before the modem ever attaches. Exits instantly on normal boots. |
 | S80 | `gl_screen` | GL-iNet's touchscreen UI daemon. |
-| S81 | `blue-merle-touch` | Procd respawn-managed daemon. Reads `/dev/input/event0` and watches for a 2-second hold on the clock area (X:0–80, Y:0–30). Forks `blue-merle sim-swap` when triggered. Can be toggled on/off via LuCI or `init.d disable`. |
-
-The throwaway IMEI written in Stage 1 is only live during the S23→S25 window, which is a few seconds at most.
+| S81 | `blue-merle-touch` | The long-press trigger daemon (procd-managed, auto-respawns). |
 
 ### IMEI rotation
 
-1. RF off (`AT+CFUN=4`) before any write
-2. Both slots written via `AT+EGMR` (field 7 = Slot 1, field 11 = Slot 2)
-3. RF on (`AT+CFUN=1`), re-register (`AT+COPS=0`)
-4. `gl_cellular_manager` restarted to flush its IMEI cache (this is what updates Settings → About Device)
+1. RF off (`AT+CFUN=4`) — the old IMEI stops transmitting before anything is written
+2. Both slots written via `AT+EGMR` (field 7 = Slot 1, field 11 = Slot 2/eSIM), NV-persisted with `AT+QPRTPARA=1`
+3. RF on (`AT+CFUN=1`) + automatic operator re-attach (`AT+COPS=0`)
+4. Registration polled via `AT+CEREG?` until attached or the configured timeout (default 120 s)
+5. `gl_cellular_manager` restarted so GL-iNet's cached IMEI (Settings → About Device) matches the modem
 
-### Volatile MAC log
+A re-attach timeout is **non-fatal**: the warning screen is shown, RF stays on, and the modem keeps retrying in the background — relevant for factory-fresh SIMs whose first activation can take the carrier several minutes.
 
-GL-iNet's `gl_clients` binary keeps a persistent MAC history at `/etc/oui-tertf/`. blue-merle mounts tmpfs over that path at S9, so the binary keeps writing there without knowing it's writing to RAM. The directory starts empty on every boot.
+If a *write* fails, blue-merle deliberately leaves RF **off** rather than transmitting a half-rotated identity, shows the error screen, and prints recovery steps (re-run, `blue-merle restore`, or `gl_modem -B CPU -U 1 AT 'AT+CFUN=1'` to force RF back on).
 
-### MAC randomization
+### IMEI modes
 
-All MAC addresses are generated from a curated OUI pool (`oui_pool.json`) with two categories:
+**Random** (default) — a TAC from `tac_pool.json` + 6 random serial digits + Luhn check digit. The pool is curated to 5G sub-6 hotspots/handsets whose band sets overlap the RG650V-NA's (n2/n5/n12/n25/n41/n66/n70/n71/n77/n78). This matters: carriers can compare a reported IMEI's expected capabilities against the cell it connects on, and a 4G-only TAC on a 5G NR cell is a contradiction — confirmed on real hardware to trigger ~10 Mbps throttling on at least one US carrier. Don't add LTE-only TACs to the pool.
 
-**Router OUIs** — used for the Mudi 7's own AP interfaces (`wifi2g`, `wifi5g`, `wifi6g`, and the guest variants). These are OUIs from common home routers and mobile hotspots (ASUS, Netgear, TP-Link, etc.) so the device's BSSIDs look like a normal home network to anyone scanning nearby.
+**Deterministic** — `IMEI = luhn(tac_pool[djb2(IMSI) % n] + serial(djb2(IMSI)))`. The same SIM always maps to the same IMEI, useful when a carrier flags frequent IMEI changes on one subscription. **Privacy trade-off:** djb2 is a public, unkeyed hash — anyone who once observes the IMEI+IMSI pairing can re-derive the link forever. Random is strictly better for unlinkability.
 
-**Client OUIs** — used for the STA (repeater/upstream) interface only. When the Mudi 7 connects to an upstream Wi-Fi network in repeater mode, its upstream MAC should look like a laptop or phone, not a router. These OUIs come from Apple, Intel, and similar NIC vendors.
+**Static** — a user-supplied 15-digit IMEI, Luhn-validated in the LuCI form *and* server-side. Written verbatim on every rotation.
 
-All generated MACs have the **locally-administered (LA) bit** forced on (`0x02` mask on the first octet). This is required by the Qualcomm `ath11k` driver: LA-bit MACs allow the driver to change channels on AP interfaces at runtime, which is how GL-iNet's channel co-location works when the repeater STA is connected. Universally-administered (UA) MACs — what you would get by just randomizing bytes — break this and can prevent the Wi-Fi radios from coming up correctly.
+All three fall back to Random (with a warning) if their inputs are unavailable, so a rotation never fails because of a missing IMSI or an unset static value.
 
-GL-iNet ships with its own BSSID randomization (`random_bssid=1` per radio). blue-merle disables this on install and takes over MAC rotation entirely, because GL-iNet's randomization generates UA MACs and runs on a different schedule.
+### SIM-swap flow
 
-**SSID** is randomized to a name matching common home routers (e.g. `NETGEAR-A3F1`, `TP-Link-7B2C`, `eero-9D4A`) — the same brands whose OUIs are in the router pool, so the SSID and BSSID stay consistent-looking as a set.
+The problem with a naive swap: if the modem ever holds *old SIM + new IMEI* (or vice versa), the two identities become linkable. Blue Merle splits the swap across a power cycle so they never coexist on air:
 
-**Hostname** is randomized to `router-XXXX` (4 random hex chars).
+1. **Stage 1** (`blue-merle sim-swap`, touchscreen, or LuCI): RF off → random **throwaway** IMEIs written to both slots → state saved → device powers off
+2. You swap SIM(s) — and ideally location — while it's off
+3. **Stage 2** (S25, automatic on next boot): final IMEIs (per your configured modes) are written *before* the modem's first attach; the throwaway IMEIs never register
 
-**Wi-Fi password** — the main and guest networks each get a separate 12-character random hex password.
+If Stage 2 can't reach the modem it leaves the pending state in place and retries next boot — the modem keeps the harmless throwaway identity in the meantime.
 
-### SIM-Swap flow
+<!-- PLACEHOLDER: assets/videos/sim-swap-flow.mp4 — optional full walkthrough:
+     trigger → poweroff → SIM swap → boot → Stage 2 splash → new identity in LuCI. Link it here. -->
 
-1. `blue-merle sim-swap` writes throwaway IMEIs, saves IMSI state to `/etc/blue-merle.sim-swap-pending`, calls `poweroff`
-2. Swap SIMs, power back on
-3. S25 reads the new IMSIs, generates final IMEIs, disables RF, writes, re-enables RF
-4. Carrier sees the final IMEI — the throwaway never registered
+### MAC, BSSID, and SSID randomization
+
+Every rotation picks **one router identity** — a single vendor OUI plus its SSID brand — from the curated pool in `oui_pool.json`:
+
+- All six AP interfaces (`wifi2g/5g/6g` + guests) get that one OUI with random NIC bytes, like a real consumer router. Mixing vendors across bands is a fingerprinting flag no real device exhibits.
+- The SSID becomes `<brand>-XXXX` to match (e.g., a Netgear OUI broadcasts `NETGEAR-A3F1`). Vendors whose factory SSIDs aren't brand-prefixed (Google Nest, Meraki) use a generic `HOME-XXXX`, plausible with any OUI.
+- The **STA (repeater) interface** gets a *client*-class OUI (Apple/Intel/Samsung laptops and phones) — upstream networks see a client device, not a router.
+- The **locally-administered bit** is forced on every generated MAC: the Qualcomm `ath11k` driver requires LA MACs for runtime channel changes on AP interfaces (GL-iNet's channel co-location in repeater mode breaks with UA MACs).
+
+GL-iNet's own `random_bssid` feature is disabled at install (it generates UA MACs on its own schedule) and re-enabled at uninstall. Hostname becomes `router-XXXX`; main and guest networks get independent random 12-hex-character passwords.
+
+### Volatile client MACs
+
+GL-iNet's `gl_clients` daemon keeps a persistent database of every client MAC that ever connected, at `/etc/oui-tertf/client.db` on flash. At S9 blue-merle deletes the on-flash copy and mounts a `tmpfs` over the directory — the daemon keeps writing without knowing it's writing to RAM, and the history starts empty every boot.
+
+(The old file is unlinked, not overwritten: the Mudi 7's overlay is ext4 on eMMC, whose flash translation layer remaps writes — overwrite-in-place tools like `shred` are ineffective there. The tmpfs mount is the real protection.)
+
+### Splash screens
+
+During operations, blue-merle stops `gl_screen` and writes pre-rendered frames (240×320 RGB565) directly to `/dev/fb0`:
+
+| | | |
+|:---:|:---:|:---:|
+| ![Rotating](screens/previews/rotating.png) | ![Done](screens/previews/done.png) | ![SIM Swap](screens/previews/simswap.png) |
+| ![Restoring](screens/previews/restoring.png) | ![Warning](screens/previews/warning.png) | ![Error](screens/previews/error.png) |
+
+| Frame | Shown when |
+|---|---|
+| `rotating` | IMEI rotation or sim-swap Stage 2 in progress |
+| `done` | Operation complete and modem re-registered |
+| `simswap` | Stage 1: powering off for the SIM swap |
+| `restoring` | Factory restore in progress |
+| `warning` | Soft failure: IMEIs written but no re-registration within the timeout (modem keeps retrying) |
+| `error` | Hard failure: a write failed; **RF is left off** until recovered |
+
+<!-- PLACEHOLDERS: photos of the real device showing the splash frames —
+     assets/screenshots/device-rotating.jpg, device-done.jpg, device-simswap.jpg, device-warning.jpg
+     (a 2×2 photo grid will replace the PNG previews above once captured) -->
+
+Frames are generated by `screens/generate.py` (Python 3 + Pillow, dev-side only — the device never needs Python) and committed as binaries. To modify: edit the `FRAMES` list, run `python3 generate.py`, commit the regenerated `.rgb565` files and PNG previews.
+
+Implementation note: `gl_screen` respawns via procd, so a plain `stop` would repaint over our frame within seconds — `_screen_splash` first removes it from procd's watch list (`ubus call service delete`), then stops it, then writes the frame. A separate GL-iNet boot process draws a progress bar at a fixed screen position during early boot; the `rotating`/`done` layouts leave that row empty so Stage 2 splashes aren't overdrawn.
 
 ---
 
-## IMEI Modes
+## Configuration Reference
 
-### Random
-
-Picks a TAC from `tac_pool.json`, appends 6 random digits, computes the Luhn check digit. The pool is curated to contain only 5G sub-6 mobile hotspots and handsets whose band sets overlap the RG650V-NA's supported bands (n2/n5/n12/n25/n41/n66/n70/n71/n77/n78).
-
-**Why the TAC pool matters:** A carrier can fingerprint a device by comparing its reported IMEI against the capabilities of the cell it is connecting on. An IMEI with a 4G-only TAC connecting via a 5G NR cell is a contradiction — some carriers flag this and throttle the connection to ~10 Mbps. Using an LTE-only TAC in the pool was confirmed to trigger this on real hardware. The pool is intentionally restricted to avoid it.
-
-### Deterministic
-
-DJB2 hash of the SIM's IMSI, mapped into the TAC pool:
+Everything lives in `/etc/config/blue-merle` (standard UCI). The `factory` section is written once at install; the `options` section is yours:
 
 ```
-IMEI = luhn_complete( tac_pool[hash(IMSI) % pool_size] + serial(hash(IMSI)) )
-```
-
-Same SIM always produces the same IMEI. Falls back to random if no IMSI is readable.
-
-### Static
-
-User-supplied 15-digit IMEI, validated for Luhn checksum before writing.
-
----
-
-## Configuration
-
-Settings live in `/etc/config/blue-merle` (standard UCI format).
-
-```
-config blue-merle 'factory'
-    option slot1_imei        '352000067890125'   # captured at install
-    option slot2_imei        '352000067890133'
-    option wifi2g_ssid       'GL-E5800-1A2B'
-    option guest_ssid        'GL-Guest-1A2B'
-    option hostname          'GL-E5800'
-    option wifi2g_mac        'A8:22:42:1A:2B:3C'
-    option wifi5g_mac        'A8:22:42:1A:2B:3B'
-    option wifi6g_mac        'A8:22:42:1A:2B:3A'
-    option sta_mac           '3A:47:9F:0C:11:82'
-    option guest2g_mac       'A8:22:42:1A:2B:3D'
-    option wifi2g_key        '<original password>'
-
 config blue-merle 'options'
-    option randomize_mac        '1'   # 0 = skip in rotate-wireless
+    option randomize_on_boot    '1'        # rotate wireless identity at every boot
+    option randomize_mac        '1'        # per-feature toggles for boot + rotate-wireless
     option randomize_ssid       '1'
     option randomize_hostname   '1'
     option randomize_password   '1'
-    option randomize_on_boot    '0'   # 1 = auto-rotate at every boot
     option imei_mode_slot1      'random'   # random | deterministic | static
     option imei_mode_slot2      'random'
-    option static_imei_slot1    ''         # only used when mode = static
+    option static_imei_slot1    ''         # used when the slot's mode is 'static'
     option static_imei_slot2    ''
+    option register_timeout     '120'      # seconds to wait for re-attach (10-600)
+    option touch_enabled        '1'        # touchscreen trigger preference
 ```
+
+All values are editable from the LuCI page (changes apply instantly) or via `uci set blue-merle.options.<name>=<value> && uci commit blue-merle`. Every value is validated server-side — malformed input is rejected, never written to the modem.
 
 ---
 
 ## Building from Source
 
-There are three ways to produce an IPK, depending on your workflow.
+Three paths, depending on your workflow:
 
-### 1. `build-ipk.sh` — offline, no SDK required
+### 1. `build-ipk.sh` — no SDK required
 
 ```sh
-git clone https://github.com/<your-org>/blue-merle-v2.git
+git clone https://github.com/WSchlesner/blue-merle-v2.git
 cd blue-merle-v2
 ./build-ipk.sh
 ```
 
-Requires only `bash`, `tar`, and `gzip`. Manually assembles the IPK from the `files/` tree and the `preinst`/`postinst`/`postrm` scripts inlined in the script itself. The pre-compiled `files/usr/bin/blue-merle-touch` binary (cross-compiled via Docker; see below) is bundled as-is.
-
-Output: `blue-merle_1.0.0-1_aarch64_cortex-a53.ipk`
-
-**When to use:** day-to-day development, testing on device without CI, building offline.
+Needs only `bash`, `tar`, and `gzip`. Produces `blue-merle-v2-1.0.0-local.ipk` from the `files/` tree, bundling the pre-compiled `blue-merle-touch` binary. **Use for:** day-to-day development and offline builds.
 
 ### 2. OpenWrt SDK — `Makefile`
 
-The `Makefile` is a standard OpenWrt package recipe. The SDK cross-compiles `src/blue-merle-touch.c` for `aarch64` automatically — no pre-built binary required.
-
-1. Download and set up the OpenWrt SDK for target `qualcommax/ipq9574` (the GL-E5800 target).
-2. Symlink this repo into the SDK packages tree:
-   ```sh
-   ln -s /path/to/blue-merle-v2 package/blue-merle
-   ```
-3. Build:
-   ```sh
-   make package/blue-merle/compile V=s
-   ```
-
-Output lands in `bin/packages/aarch64_cortex-a53/base/`.
-
-**When to use:** producing a reproducible build from source without a committed binary, or submitting to an opkg feed.
-
-> **Note:** The `Makefile` currently does not install `blue-merle-touch` or its init.d service — those entries need to be added to `Package/blue-merle/install` if you want a fully SDK-built package.
-
-### 3. GitHub Actions — automated CI / release
-
-The workflow at `.github/workflows/build.yml` runs `./build-ipk.sh` automatically:
-
-- **On every push to `main`** — builds the IPK and uploads it as a workflow artifact (retained 30 days).
-- **On every `v*.*.*` tag** — builds the IPK and publishes it as a GitHub Release with auto-generated release notes.
-- **Manually** — trigger via the **Run workflow** button in the Actions tab (`workflow_dispatch`).
-
-To cut a release:
+A standard OpenWrt package recipe that compiles `src/blue-merle-touch.c` from source (no committed-binary trust required):
 
 ```sh
-git tag v1.1.0
-git push origin v1.1.0
+# inside an SDK for target qualcommax/ipq9574
+ln -s /path/to/blue-merle-v2 package/blue-merle-v2
+make package/blue-merle-v2/compile V=s
 ```
 
-The IPK appears under **Releases** once the workflow completes.
+Output: `bin/packages/aarch64_cortex-a53/base/blue-merle-v2_1.0.0-1_aarch64_cortex-a53.ipk`. **Use for:** reproducible/auditable builds or opkg feed submission.
 
-### Cross-compiling `blue-merle-touch`
+### 3. GitHub Actions
 
-The `blue-merle-touch` C daemon must be compiled for `aarch64` (musl, statically linked). If you change `src/blue-merle-touch.c`, rebuild with:
+[`build.yml`](.github/workflows/build.yml) runs `build-ipk.sh` on every push and PR (artifact retained 30 days) and publishes a GitHub Release on every `v*.*.*` tag:
+
+```sh
+git tag v1.1.0 && git push origin v1.1.0
+```
+
+### Rebuilding the touch daemon
+
+If you change `src/blue-merle-touch.c`, cross-compile the static aarch64 binary (Docker + QEMU binfmt):
 
 ```sh
 docker run --rm --platform linux/arm64 \
@@ -358,223 +420,94 @@ docker run --rm --platform linux/arm64 \
          gcc -O2 -static -o /out/blue-merle-touch /src/blue-merle-touch.c'
 ```
 
-Requires Docker with QEMU binfmt support (`multiarch/qemu-user-static`). Commit the resulting `files/usr/bin/blue-merle-touch` binary so `build-ipk.sh` and GitHub Actions can bundle it without a local toolchain.
+Commit the resulting binary so path 1 and CI can bundle it.
 
-### Development deploy (`deploy.sh`)
+### Development deploy
 
-For iterating without rebuilding the IPK each time:
-
-```sh
-./deploy.sh                    # deploys to root@192.168.8.1
-./deploy.sh root@192.168.8.2   # custom host
-```
-
-Copies all source files directly to the device over SCP and re-enables the init.d services. Uses `scp -O` (legacy SCP protocol) required by OpenWrt's busybox SSH server. Does **not** run `blue-merle install` — if you need to re-capture factory state, run that manually over SSH.
+`./deploy.sh [host]` (default `root@192.168.8.1`) copies the working tree straight onto a device over SCP and re-registers the services — fast iteration without rebuilding the IPK. It does **not** run factory capture; run `blue-merle install` manually if needed.
 
 ---
 
-## Codebase
+## Uninstalling
+
+```sh
+opkg remove blue-merle-v2
+```
+
+`prerm` stops and disables all services and **restores the full factory identity** (IMEIs, MACs, SSIDs, passwords, hostname); `postrm` re-enables GL-iNet's BSSID randomization and removes runtime state. Factory state in `/etc/config/blue-merle` is intentionally left behind so a future reinstall keeps the original values — delete it for a clean slate:
+
+```sh
+uci delete blue-merle.factory && uci delete blue-merle.options && uci commit blue-merle
+```
+
+---
+
+## AT Commands We Deliberately Avoid
+
+Hard-won knowledge from bricking-adjacent experiments on the RG650V-NA — none of these are used, and none should be added:
+
+| Command | Why not |
+|---|---|
+| `AT+QPOWD` | Leaves the modem unresponsive until a full device reboot |
+| `AT+CFUN=1,1` | Reboots the entire device, not just the modem RF |
+| `AT+QPRTPARA=3` | Quectel factory reset — undefined behavior on carrier units |
+| `AT+QUIMSUB` | Breaks the AT socket until reboot |
+| `ubus call cellular.cm cm_stop_dial` | Persists `allow_dial=0` to flash; cellular manager then skips SIM detection on every subsequent boot |
+| Writes to the RAWDATA MMC partition | Where the factory MAC lives; corruption is unrecoverable |
+| Default eSIM profile deletion | Cannot be restored without a factory reset |
+
+---
+
+## Project Status
+
+Implemented, reviewed, and device-verified on firmware 4.8.5: install/uninstall lifecycle, dual-IMEI rotate and restore (live `AT+EGMR` writes confirmed), wireless rotation, volatile MACs, all six splash frames, the LuCI page, the touchscreen daemon, and the health check.
+
+**Pending live-SIM validation** (requires an activated SIM):
+
+- [ ] Re-registration after rotate (`+CEREG` 1/5, end-to-end)
+- [ ] Deterministic mode end-to-end (IMSI → IMEI → carrier attach)
+- [ ] Full two-stage sim-swap with a physical SIM change
+- [ ] Throwaway IMEI exposure window check (`logread | grep "sim-swap throwaway"`)
+
+---
+
+## Repository Layout
 
 ```
 blue-merle-v2/
-├── README.md
-├── build-ipk.sh                     — standalone IPK builder (no SDK required)
-├── deploy.sh                        — scp + install shortcut for dev workflow
-├── Makefile                         — OpenWrt package Makefile for SDK builds
-│
-├── src/
-│   └── blue-merle-touch.c           — touchscreen daemon C source
-│                                      (cross-compiled for aarch64 via Docker + QEMU)
-│
+├── build-ipk.sh                 IPK builder (no SDK; control scripts inlined)
+├── Makefile                     OpenWrt SDK package recipe
+├── deploy.sh                    dev deploy over SCP
+├── src/blue-merle-touch.c       touchscreen daemon (C, statically linked)
 ├── screens/
-│   ├── generate.py                  — RGB565 frame generator (Python 3 + Pillow)
-│   ├── previews/                    — PNG previews (committed; embedded in README)
-│   └── extras/                      — error.rgb565 / warning.rgb565 (not bundled)
-│
-└── files/                           — package payload (mirrors the device filesystem)
-    ├── usr/bin/blue-merle           — main CLI
-    ├── usr/bin/blue-merle-touch     — compiled aarch64 static binary (~347 KB)
-    ├── usr/libexec/blue-merle       — rpcd exec backend called by LuCI
-    │
-    ├── usr/share/blue-merle/
-    │   ├── tac_pool.json            — TAC list for IMEI generation
-    │   ├── oui_pool.json            — OUI list for MAC randomization
-    │   └── screens/                 — pre-rendered 240×320 RGB565 splash frames
-    │       ├── rotating.rgb565
-    │       ├── done.rgb565
-    │       ├── simswap.rgb565
-    │       └── restoring.rgb565
-    │
+│   ├── generate.py              RGB565 frame generator (dev-side, Python+Pillow)
+│   └── previews/                PNG previews of all frames (embedded above)
+├── assets/                      README screenshots and videos
+└── files/                       package payload (mirrors the device filesystem)
+    ├── usr/bin/blue-merle       CLI entry point (ash)
+    ├── usr/bin/blue-merle-touch pre-compiled touch daemon
+    ├── usr/libexec/blue-merle   rpcd exec backend for LuCI (JSON over fs.exec)
     ├── lib/blue-merle/
-    │   └── functions.sh             — AT helpers, IMEI/MAC generation, modem reset,
-    │                                  splash screen functions
-    │
-    ├── etc/init.d/
-    │   ├── blue-merle-volatile-macs — S9: tmpfs over /etc/oui-tertf
-    │   ├── blue-merle-wireless      — S10: boot-time wireless rotation
-    │   ├── blue-merle-sim-swap      — S25: SIM-swap Stage 2
-    │   └── blue-merle-touch         — S81: touchscreen long-press daemon
-    │
-    └── www/luci-static/resources/view/
-        └── blue_merle.js            — LuCI2 admin page
+    │   ├── functions.sh         AT helpers, IMEI/MAC/SSID generation, RF control,
+    │   │                        splash control — single shared library
+    │   ├── imei_generate.lua    TAC-pool IMEI generator (random + deterministic)
+    │   └── luhn.lua             Luhn checksum module
+    ├── etc/init.d/              four services: volatile-macs (S9), wireless (S10),
+    │                            sim-swap stage 2 (S25), touch (S81)
+    ├── usr/share/blue-merle/
+    │   ├── tac_pool.json        curated 5G TACs (band-matched to the RG650V-NA)
+    │   ├── oui_pool.json        router + client OUIs with SSID brand mapping
+    │   └── screens/*.rgb565     six pre-rendered splash frames
+    └── www/…/blue_merle.js      LuCI2 admin page (vanilla JS view)
 ```
-
-**`files/lib/blue-merle/functions.sh`** — all modem interaction:
-- `_at <cmd>` — sends AT via `gl_modem -B CPU -U $SUB`
-- `READ_IMEI` / `READ_IMEI_SLOT2` — `AT+EGMR=0,7` / `AT+EGMR=0,11`
-- `SET_IMEIS <imei1> <imei2>` — disables RF, writes both slots, re-enables
-- `READ_IMSI_SLOT1` / `READ_IMSI_SLOT2` — per-slot IMSI via `-U 1` / `-U 2`
-- `MODEM_RESET_FOR_PRIVACY` — RF cycle + wait for `+CEREG` + restart `gl_cellular_manager`
-- `_gen_imei <slot> <mode>` — dispatches to random/deterministic/static
-
-**`src/blue-merle-touch.c`** — statically-linked aarch64 daemon. Opens `/dev/input/event0` read-only (no EVIOCGRAB), tracks `ABS_MT_POSITION_X/Y` and `BTN_TOUCH` events, measures hold duration using kernel event timestamps. Cross-compile command:
-
-```sh
-docker run --rm --platform linux/arm64 \
-  -v $(pwd)/src:/src -v $(pwd)/files/usr/bin:/out \
-  alpine:3.20 \
-  sh -c 'apk add --no-cache gcc musl-dev linux-headers && gcc -O2 -static -o /out/blue-merle-touch /src/blue-merle-touch.c'
-```
-
-**`files/usr/bin/blue-merle`** — parses subcommands and calls into `functions.sh`.
-
-**`files/usr/libexec/blue-merle`** — rpcd backend for LuCI. Returns JSON on `status`, fires rotate/restore operations in the background (logged to `/tmp/blue-merle.log`), handles `set:<key>=<val>` for option persistence.
-
-**`files/www/luci-static/resources/view/blue_merle.js`** — the LuCI page. Polls the rpcd backend on load, streams log output during operations.
-
----
-
-## Splash Screens
-
-During operations the daemon writes a pre-rendered frame to `/dev/fb0`. Four frames ship with the IPK:
-
-| Frame | Shown when |
-|---|---|
-| `rotating.rgb565` | IMEI rotation or SIM-swap Stage 2 in progress |
-| `done.rgb565` | Rotation complete |
-| `simswap.rgb565` | Stage 1: device powering off for SIM swap |
-| `restoring.rgb565` | Factory restore in progress |
-
-**Format:** 240×320 portrait, 16-bit RGB565 little-endian, 153,600 bytes each.
-
-| Rotating | Done | SIM Swap | Restoring |
-|:---:|:---:|:---:|:---:|
-| ![Rotating](screens/previews/rotating.png) | ![Done](screens/previews/done.png) | ![SIM Swap](screens/previews/simswap.png) | ![Restoring](screens/previews/restoring.png) |
-
-### How they are displayed
-
-`_screen_splash <name>` in `lib/blue-merle/functions.sh`:
-
-1. `ubus call service delete '{"name":"gl_screen"}'` — removes `gl_screen` from procd's watch list. This is required because `gl_screen` uses `procd_set_param respawn` with no arguments, meaning a plain `stop` triggers an immediate restart that overwrites the framebuffer.
-2. `/etc/init.d/gl_screen stop` + `pkill -9 gl_screen`
-3. Polls `pidof gl_screen` up to 5 seconds until the process is gone.
-4. `cat <name>.rgb565 > /dev/fb0`
-
-`_screen_restore_display` restarts `gl_screen` after user-triggered operations. Boot scripts do **not** call this — `gl_screen` restarts at S80 automatically.
-
-### How to rebuild frames
-
-Requires Python 3 and Pillow (`pip install Pillow`), plus DejaVu fonts installed at `/usr/share/fonts/truetype/dejavu/`.
-
-```sh
-cd screens
-python3 generate.py
-```
-
-Output: `files/usr/share/blue-merle/screens/*.rgb565` (committed — device has no Python) and `screens/previews/*.png` (also committed; embedded in the README below).
-
-### How to modify frames
-
-Edit the `FRAMES` list in `screens/generate.py`. Each entry:
-
-```python
-("name", "Main Text", COLOR, [
-    ("sub line text",  font_size, COLOR, gap_before_px),
-    ...
-])
-```
-
-Run `python3 generate.py` after any change. Commit the resulting `.rgb565` files.
-
-### Testing a frame on device
-
-```sh
-# Preview a frame immediately (stops gl_screen):
-ssh root@192.168.8.1 'cat /usr/share/blue-merle/screens/rotating.rgb565 > /dev/fb0'
-
-# Restore normal UI:
-ssh root@192.168.8.1 '/etc/init.d/gl_screen start'
-```
-
-<!-- PHOTOS: Replace with actual device photos once captured -->
-<!-- Upload to assets/screenshots/ and update the image paths -->
-
-> **Device photos needed:**
-> - `assets/screenshots/device-rotating.jpg` — Mudi 7 screen showing "Rotating..." splash
-> - `assets/screenshots/device-done.jpg` — Mudi 7 screen showing "Done" splash
-> - `assets/screenshots/device-simswap.jpg` — Mudi 7 screen showing "SIM Swap" splash
-
-### Extra frames (not bundled)
-
-`screens/extras/` contains `error.rgb565` and `warning.rgb565` for future error/warning states. They are not included in the IPK and not wired to any call site yet.
-
-### Note on GL-iNet boot animation
-
-During a boot-time SIM swap (Stage 2 at S25), a separate GL-iNet proprietary process writes a horizontal progress bar to `/dev/fb0` at a fixed vertical position regardless of `gl_screen`'s state. The `rotating` and `done` frames have 28 px of extra spacing at the lines that would otherwise overlap this bar (`Writing to Modem...` and `Re-registered with Carrier`).
-
----
-
-## Uninstall
-
-```sh
-opkg remove blue-merle
-```
-
-The `postrm` script re-enables GL-iNet's BSSID randomization and removes the init.d services. Factory state in `/etc/config/blue-merle` is left in place — remove it manually if you want a clean slate:
-
-```sh
-uci delete blue-merle.factory
-uci delete blue-merle.options
-uci commit blue-merle
-```
-
----
-
-## AT Commands — What We Don't Use
-
-A few commands look useful but cause serious problems on the RG650V-NA:
-
-| Command | Problem |
-|---|---|
-| `AT+QPOWD` | Leaves the modem unresponsive until full device reboot |
-| `AT+CFUN=1,1` | Reboots the whole device, not just an RF cycle |
-| `AT+QPRTPARA=3` | Quectel internal factory reset — behavior on carrier-locked units is undefined |
-| `AT+QUIMSUB` | Breaks the AT socket until reboot |
-| RAWDATA MMC partition | Where the factory MAC lives — writes risk unrecoverable corruption |
-| Default eSIM profile | Can't be restored without a factory reset |
-| `ubus call cellular.cm cm_stop_dial` | Writes `allow_dial=0` to flash, persists across reboots |
-
----
-
-## Work in Progress
-
-### Live SIM validation
-
-Still need to run these with a real connected SIM:
-- Modem re-registration (confirm `+CEREG` stat 1 or 5 after rotate)
-- Deterministic mode end-to-end (IMSI → IMEI → carrier attach)
-- Full sim-swap two-stage flow with physical SIM change
-- Throwaway IMEI timing (`logread | grep "sim-swap throwaway"`)
 
 ---
 
 ## Acknowledgements
 
-- **[SRLabs](https://www.srlabs.de) / [`srlabs/blue-merle`](https://github.com/srlabs/blue-merle)** — original design, threat model, and the v1 implementation this port is based on.
-- **[GL.iNet `glinet-tac-fix`](https://github.com/gl-inet/glinet-tac-fix)** — the only public GL.iNet code that calls `AT+EGMR`, which confirmed the correct quoting format and the `AT+QPRTPARA=1` NV persistence pattern needed for the Quectel RG650V-NA.
-
----
+- **[SRLabs](https://www.srlabs.de) / [srlabs/blue-merle](https://github.com/srlabs/blue-merle)** — the original design, threat model, and v1 implementation this port is built on.
+- **[gl-inet/glinet-tac-fix](https://github.com/gl-inet/glinet-tac-fix)** — the only public GL.iNet code calling `AT+EGMR`, which confirmed the quoting format and the `AT+QPRTPARA=1` NV-persistence pattern for the RG650V-NA.
 
 ## License
 
-GPL-2.0-only, same as the original SRLabs blue-merle.
+GPL-2.0-only — same as the original SRLabs blue-merle.

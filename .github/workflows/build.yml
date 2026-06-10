@@ -1,4 +1,4 @@
-name: Build (script)
+name: Build (Script)
 
 # Fast path: assembles the IPK with build-ipk.sh (bundles the pre-compiled
 # blue-merle-touch binary). The companion sdk-build.yml workflow compiles the
@@ -57,7 +57,7 @@ jobs:
 
       - name: Create release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: "*.ipk"
           generate_release_notes: true

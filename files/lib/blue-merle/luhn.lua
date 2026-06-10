@@ -1,6 +1,8 @@
 -- Luhn checksum helpers for IMEI generation.
--- Adapted from https://cybersecurity.att.com/blogs/labs-research/luhn-checksum-algorithm-lua-implementation
--- v2: exported as a module; standalone CLI mode kept for backwards compat.
+-- Derived from blue-merle's luhn.lua (Copyright (c) 2022, SRLabs;
+-- BSD 3-Clause — full notice in the repository NOTICE file), itself adapted
+-- from https://cybersecurity.att.com/blogs/labs-research/luhn-checksum-algorithm-lua-implementation
+-- v2 changes: exported as a module; standalone CLI mode kept for backwards compat.
 
 local bit = require("bit")
 local M = {}

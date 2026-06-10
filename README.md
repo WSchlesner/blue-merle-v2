@@ -525,4 +525,6 @@ blue-merle-v2/
 
 ## License
 
-GPL-2.0-only — same as the original SRLabs blue-merle.
+**GPL-2.0-only** — see [LICENSE](LICENSE).
+
+The original [SRLabs blue-merle](https://github.com/srlabs/blue-merle) is licensed under the BSD 3-Clause License; code derived from it (`files/lib/blue-merle/luhn.lua`) retains SRLabs' copyright, and their full BSD notice is reproduced in [NOTICE](NOTICE) as its terms require. BSD 3-Clause code may be incorporated into a GPL-2.0 work; the combined project is distributed under GPL-2.0-only.

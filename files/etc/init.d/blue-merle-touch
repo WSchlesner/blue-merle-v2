@@ -1,4 +1,10 @@
 #!/bin/sh /etc/rc.common
+# blue-merle v2 — touchscreen long-press trigger daemon
+#
+# Runs at START=81, right after gl_screen (S80). blue-merle-touch reads
+# /dev/input/event0 non-exclusively (gl_screen keeps working) and forks
+# `blue-merle sim-swap` on a 2-second hold of the clock area (X:0-80, Y:0-30).
+# Toggled via the LuCI page or: /etc/init.d/blue-merle-touch disable && stop
 
 START=81
 STOP=20

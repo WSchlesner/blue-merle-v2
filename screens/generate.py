@@ -135,7 +135,9 @@ def make_frame(name, main_text, main_color, sub_lines):
 
 # ── Frame definitions ─────────────────────────────────────────────────────────
 # sub_lines entries: (text, font_size, color, gap_before_px)
-DIM = (71, 85, 105)   # #475569  dimmer gray for tip lines
+DIM    = (71,  85,  105)  # #475569  dimmer gray for tip lines
+RED    = (239, 68,  68)   # #ef4444  hard-failure frame
+ORANGE = (249, 115, 22)   # #f97316  soft-failure frame (warning)
 
 FRAMES = [
     ("rotating",  "Rotating...",  WHITE,  [
@@ -164,41 +166,22 @@ FRAMES = [
         ("Hostname",                       14, GRAY,  6),
         ("Please wait...",                 11, DIM,  12),
     ]),
+    ("error",     "Error",        RED,    [
+        ("Operation failed.",              14, GRAY, 14),
+        ("RF left OFF for privacy.",       14, GRAY,  6),
+        ("logread | grep blue-merle",      11, DIM,  10),
+    ]),
+    # warning — soft failure: IMEIs were written but the modem did not
+    # re-register within the timeout; it keeps retrying in the background.
+    ("warning",   "Warning",      ORANGE, [
+        ("Modem did not re-register.",     14, GRAY, 14),
+        ("Check connection manually.",     14, GRAY,  6),
+        ("logread | grep blue-merle",      11, DIM,  10),
+    ]),
 ]
 
 print(f"Generating {len(FRAMES)} frames  ({W}×{H} RGB565, {W*H*2:,} bytes each)")
 for args in FRAMES:
     make_frame(*args)
-
-# ── Extra frames (not bundled in IPK — for future use) ────────────────────────
-# Saved to screens/extras/ so the build-ipk.sh glob doesn't pick them up.
-# error   — hard failure (IMEI write failed, modem unresponsive)
-# warning — soft failure (modem timed out on re-registration, operation completed
-#           but device may not be on network yet)
-
-EXTRAS_DIR = os.path.join(SCRIPT_DIR, "extras")
-os.makedirs(EXTRAS_DIR, exist_ok=True)
-
-RED    = (239, 68,  68)   # #ef4444
-ORANGE = (249, 115, 22)   # #f97316
-
-EXTRA_FRAMES = [
-    ("error",   "Error",   RED,    [
-        ("Operation failed.",               14, GRAY, 14),
-        ("logread | grep blue-merle",       11, DIM,  10),
-    ]),
-    ("warning", "Warning", ORANGE, [
-        ("Modem did not re-register.",      14, GRAY, 14),
-        ("Check connection manually.",      14, GRAY,  6),
-        ("logread | grep blue-merle",       11, DIM,  10),
-    ]),
-]
-
-_orig_out = OUT_DIR
-OUT_DIR = EXTRAS_DIR
-print(f"\nGenerating {len(EXTRA_FRAMES)} extra frames  → {os.path.relpath(EXTRAS_DIR)}")
-for args in EXTRA_FRAMES:
-    make_frame(*args)
-OUT_DIR = _orig_out
 
 print("Done.")

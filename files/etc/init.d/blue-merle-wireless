@@ -12,16 +12,10 @@
 #   uci set blue-merle.options.randomize_password=0 # disable password rotation
 #   uci commit blue-merle
 
-. /lib/blue-merle/functions.sh
+. /lib/blue-merle/functions.sh   # provides _opt_enabled and the RANDOMIZE_* helpers
 
 START=10
 STOP=99
-
-_opt_enabled() {
-    local val
-    val=$(uci -q get "blue-merle.options.$1" 2>/dev/null)
-    [ "$val" != "0" ]
-}
 
 start() {
     _opt_enabled randomize_on_boot || return 0

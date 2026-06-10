@@ -177,6 +177,14 @@ _print_status() {
     fi
     echo "Active data slot: $(READ_ACTIVE_SLOT)"
     echo ""
+    echo "=== Network ==="
+    echo "  Slot 1 registration: $(_decode_reg_stat "$(_read_reg_stat 1)")"
+    echo "  Slot 2 registration: $(_decode_reg_stat "$(_read_reg_stat 2)")"
+    local _operator
+    _operator=$(READ_OPERATOR)
+    [ -n "$_operator" ] && echo "  Operator: $_operator"
+    echo "  Signal:   $(READ_SIGNAL)"
+    echo ""
     echo "=== MAC addresses ==="
     for _iface in wifi2g wifi5g wifi6g guest2g guest5g guest6g sta; do
         local _mac
@@ -194,7 +202,7 @@ _print_status() {
     echo "  Hostname: $(uci -q get system.@system[0].hostname 2>/dev/null)"
     echo ""
     echo "=== Randomization options ==="
-    for _opt in randomize_mac randomize_ssid randomize_hostname randomize_password; do
+    for _opt in randomize_on_boot randomize_mac randomize_ssid randomize_hostname randomize_password; do
         local _val
         _val=$(uci -q get "blue-merle.options.${_opt}" 2>/dev/null)
         [ -z "$_val" ] && _val="1 (default)"
@@ -202,20 +210,138 @@ _print_status() {
     done
 }
 
+# ── Health check ──────────────────────────────────────────────────────────────
+
+_CHECK_FAILS=0
+_pass() { echo "  PASS  $1"; }
+_fail() { echo "  FAIL  $1"; _CHECK_FAILS=$((_CHECK_FAILS + 1)); }
+_warn() { echo "  WARN  $1"; }
+
+# Verify the environment blue-merle depends on. Read-only — safe to run any
+# time. Exits non-zero if any FAIL (WARNs do not affect the exit code).
+_run_check() {
+    echo "=== blue-merle health check ==="
+    echo ""
+    echo "Modem:"
+    if command -v gl_modem >/dev/null 2>&1; then
+        _pass "gl_modem present"
+    else
+        _fail "gl_modem not found"
+    fi
+    if [ -S /tmp/modem.CPU.AT.sock ]; then
+        _pass "AT socket present (/tmp/modem.CPU.AT.sock)"
+    else
+        _fail "AT socket missing (/tmp/modem.CPU.AT.sock)"
+    fi
+    if _at ATI 2>/dev/null | grep -q "OK"; then
+        _pass "modem answers AT commands"
+    else
+        _fail "modem not responding to AT commands"
+    fi
+    local _imei
+    _imei=$(READ_IMEI)
+    if [ -n "$_imei" ]; then
+        _pass "IMEI readable (slot 1: $_imei)"
+    else
+        _fail "cannot read IMEI via AT+EGMR"
+    fi
+
+    echo ""
+    echo "IMEI generator:"
+    local _gen
+    _gen=$(GENERATE_IMEI 2>/dev/null)
+    if [ ${#_gen} -eq 15 ]; then
+        _pass "lua generator produces valid IMEIs (sample: $_gen)"
+    else
+        _fail "lua generator broken — check lua and luabitop packages"
+    fi
+    local _tacs
+    _tacs=$(grep -c '"tac"' /usr/share/blue-merle/tac_pool.json 2>/dev/null)
+    if [ "${_tacs:-0}" -gt 0 ]; then
+        _pass "TAC pool present ($_tacs TACs)"
+    else
+        _fail "TAC pool missing or empty (/usr/share/blue-merle/tac_pool.json)"
+    fi
+    local _ouis
+    _ouis=$(_load_router_identities | grep -c '.')
+    if [ "${_ouis:-0}" -gt 0 ]; then
+        _pass "OUI pool present ($_ouis router identities)"
+    else
+        _fail "OUI pool missing or has no router brand entries"
+    fi
+
+    echo ""
+    echo "Splash frames:"
+    local _frame _missing=0
+    for _frame in rotating done simswap restoring error warning; do
+        [ -f "${_SCREENS_DIR}/${_frame}.rgb565" ] || { _fail "frame missing: ${_frame}.rgb565"; _missing=1; }
+    done
+    [ "$_missing" = "0" ] && _pass "all 6 frames present"
+    if [ -c /dev/fb0 ]; then
+        _pass "framebuffer present (/dev/fb0)"
+    else
+        _warn "no /dev/fb0 — splash frames cannot be displayed"
+    fi
+
+    echo ""
+    echo "Services:"
+    local _svc
+    for _svc in blue-merle-volatile-macs blue-merle-wireless blue-merle-sim-swap; do
+        if ls /etc/rc.d/S*"${_svc}" >/dev/null 2>&1; then
+            _pass "${_svc} enabled"
+        else
+            _fail "${_svc} not enabled (run: /etc/init.d/${_svc} enable)"
+        fi
+    done
+    if ls /etc/rc.d/S*blue-merle-touch >/dev/null 2>&1; then
+        if pidof blue-merle-touch >/dev/null 2>&1; then
+            _pass "blue-merle-touch enabled and running"
+        else
+            _warn "blue-merle-touch enabled but not running"
+        fi
+    else
+        _warn "blue-merle-touch disabled (touchscreen trigger off)"
+    fi
+    if mount | grep -q "tmpfs on /etc/oui-tertf "; then
+        _pass "client-MAC database is RAM-backed (tmpfs mounted)"
+    else
+        _fail "tmpfs NOT mounted on /etc/oui-tertf — client MACs are hitting flash"
+    fi
+
+    echo ""
+    echo "State:"
+    if [ -n "$(_get_factory slot1_imei)" ]; then
+        _pass "factory state saved"
+    else
+        _warn "factory state not captured — run: blue-merle install"
+    fi
+    if [ -f /etc/blue-merle.sim-swap-pending ]; then
+        _warn "sim-swap Stage 2 pending — completes on next boot"
+    fi
+
+    echo ""
+    if [ "$_CHECK_FAILS" -eq 0 ]; then
+        echo "Result: all checks passed."
+        return 0
+    else
+        echo "Result: $_CHECK_FAILS check(s) FAILED."
+        return 1
+    fi
+}
+
 # ── Core rotation ─────────────────────────────────────────────────────────────
 
 # Rotate wireless identity immediately, respecting per-feature option flags.
-# Calls wifi reload so changes take effect without a reboot.
+# Calls WIFI_RELOAD so changes take effect without a reboot.
 _rotate_wireless() {
-    local _v _new_sta_mac
-    _v() { uci -q get "blue-merle.options.$1" 2>/dev/null; }
-    [ "$(_v randomize_mac)"      != "0" ] && RANDOMIZE_MACADDR
-    [ "$(_v randomize_ssid)"     != "0" ] && RANDOMIZE_SSID
-    [ "$(_v randomize_hostname)" != "0" ] && RANDOMIZE_HOSTNAME
-    [ "$(_v randomize_password)" != "0" ] && RANDOMIZE_PASSWORD
+    local _new_sta_mac _sta_iface
+    _opt_enabled randomize_mac      && RANDOMIZE_MACADDR
+    _opt_enabled randomize_ssid     && RANDOMIZE_SSID
+    _opt_enabled randomize_hostname && RANDOMIZE_HOSTNAME
+    _opt_enabled randomize_password && RANDOMIZE_PASSWORD
     # Snapshot the new STA MAC before wifi reload clobbers wireless.sta.macaddr.
     _new_sta_mac=$(uci -q get wireless.sta.macaddr 2>/dev/null)
-    wifi reload 2>/dev/null
+    WIFI_RELOAD
     # wifi reload regenerates wireless.sta.macaddr — re-apply and push to live iface.
     if [ -n "$_new_sta_mac" ] && uci get wireless.sta >/dev/null 2>&1; then
         uci set "wireless.sta.macaddr=${_new_sta_mac}"
@@ -231,8 +357,8 @@ _rotate_wireless() {
     echo "blue-merle: wireless identity rotated."
 }
 
-# $1 = slot1 mode (random|deterministic)
-# $2 = slot2 mode (random|deterministic)
+# $1 = slot1 mode (random|deterministic|static)
+# $2 = slot2 mode (random|deterministic|static)
 # $3 = reboot flag (1 = reboot after write instead of CFUN cycle; for testing only)
 _rotate() {
     local mode1="${1:-random}" mode2="${2:-random}" do_reboot="${3:-0}"
@@ -246,7 +372,9 @@ _rotate() {
     imei2=$(_gen_imei 2 "$mode2")
 
     if [ -z "$imei1" ] || [ -z "$imei2" ]; then
-        echo "blue-merle: IMEI generation failed" >&2
+        echo "blue-merle: IMEI generation failed — RF left disabled" >&2
+        _recovery_hint
+        _screen_fail
         return 1
     fi
 
@@ -254,7 +382,12 @@ _rotate() {
     echo "  Slot 1 IMEI: $imei1"
     echo "  Slot 2 IMEI: $imei2"
 
-    SET_IMEIS "$imei1" "$imei2" || { _screen_restore_display; return 1; }
+    SET_IMEIS "$imei1" "$imei2" || {
+        echo "blue-merle: IMEI write failed — RF left disabled" >&2
+        _recovery_hint
+        _screen_fail
+        return 1
+    }
 
     date '+%Y-%m-%d %H:%M (manual)' > /etc/blue-merle.last_imei_rotate
 
@@ -269,14 +402,43 @@ _rotate() {
         echo "blue-merle: cycling modem RF for network re-attach..."
         if MODEM_RESET_FOR_PRIVACY; then
             echo "blue-merle: done."
+            _screen_splash done
+            sleep 2
         else
-            echo "blue-merle: done."
-            echo "blue-merle: warning — modem did not re-register within 90s; check manually" >&2
+            echo "blue-merle: done — IMEIs written, but the modem has not re-registered yet." >&2
+            echo "blue-merle: it keeps retrying in the background; check 'blue-merle status' or the GL UI." >&2
+            _screen_splash warning
+            sleep 3
         fi
-        _screen_splash done
-        sleep 2
         _screen_restore_display
     fi
+}
+
+_usage() {
+    cat <<'EOF'
+Usage: blue-merle <command> [options]
+
+Commands:
+  install          Capture factory state (run once before first rotation)
+  status           Show per-slot IMEI/IMSI/ICCID, network registration, MACs
+  check            Health check: modem, generator, frames, services (read-only)
+  rotate           Rotate both slot IMEIs and cycle RF for re-attach
+  rotate-wireless  Rotate MACs/SSIDs/hostname/password now (respects option flags)
+  sim-swap         Disable RF, write throwaway IMEIs, poweroff; Stage 2 (final IMEI write) runs on next boot
+  restore          Restore all factory IMEIs, MACs, SSIDs, and hostname
+  help             Show this help
+
+Mode options (rotate / sim-swap):
+  --slot1=random|deterministic|static   IMEI mode for SIM Slot 1 (default: random)
+  --slot2=random|deterministic|static   IMEI mode for SIM Slot 2 / eSIM (default: random)
+  --random                              Both slots random (shorthand)
+  --deterministic                       Both slots deterministic (shorthand)
+  --static                              Both slots use saved static IMEI (shorthand)
+
+Testing options (rotate only):
+  --reboot                       Reboot after writing IMEIs instead of cycling RF
+                                 Use to verify IMEI persistence across a cold boot
+EOF
 }
 
 # ── CLI flag parsing ──────────────────────────────────────────────────────────
@@ -296,6 +458,19 @@ for _arg in "$@"; do
         --slot1=*)       _slot1_mode="${_arg#--slot1=}" ;;
         --slot2=*)       _slot2_mode="${_arg#--slot2=}" ;;
         --reboot)        _reboot=1 ;;
+        --help)          cmd="help" ;;
+        --*)             echo "blue-merle: unknown option '$_arg'" >&2; exit 1 ;;
+    esac
+done
+
+# UCI defaults were coerced to random above, so an invalid mode here can only
+# come from an explicit --slot1=/--slot2= flag — fail loudly instead of
+# silently rotating with a mode the user didn't ask for.
+for _mode in "$_slot1_mode" "$_slot2_mode"; do
+    case "$_mode" in
+        random|deterministic|static) ;;
+        *) echo "blue-merle: invalid IMEI mode '$_mode' — use random, deterministic, or static" >&2
+           exit 1 ;;
     esac
 done
 
@@ -308,6 +483,10 @@ case "$cmd" in
 
     status)
         _print_status
+        ;;
+
+    check)
+        _run_check
         ;;
 
     rotate)
@@ -326,6 +505,13 @@ case "$cmd" in
         echo "── Blue-Merle SIM Swap ────────────────────────────────"
         echo "  Slot 1 mode: $_slot1_mode  |  Slot 2 mode: $_slot2_mode"
         echo ""
+
+        # Mark sim-swap in progress so the touchscreen daemon's guard blocks
+        # re-triggers (blue-merle-touch checks STAGE_FILE = this path). Lives in
+        # /tmp (RAM) so it clears automatically on the poweroff/boot cycle.
+        # Removed explicitly on every interactive failure path below.
+        _SS_STAGE=/tmp/blue-merle-sim-swap.stage
+        : > "$_SS_STAGE"
 
         _ss_old_imei1=$(READ_IMEI)
         _ss_old_imei2=$(READ_IMEI_SLOT2)
@@ -348,9 +534,17 @@ case "$cmd" in
         _ss_pre_imei2=$(GENERATE_IMEI)
         if [ -z "$_ss_pre_imei1" ] || [ -z "$_ss_pre_imei2" ]; then
             echo "blue-merle: IMEI generation failed" >&2
+            rm -f "$_SS_STAGE"
+            _screen_fail
             exit 1
         fi
-        SET_IMEIS "$_ss_pre_imei1" "$_ss_pre_imei2" || exit 1
+        SET_IMEIS "$_ss_pre_imei1" "$_ss_pre_imei2" || {
+            echo "blue-merle: throwaway IMEI write failed — RF left disabled" >&2
+            _recovery_hint
+            rm -f "$_SS_STAGE"
+            _screen_fail
+            exit 1
+        }
 
         echo "  Slot 1 throwaway: $_ss_pre_imei1"
         echo "  Slot 2 throwaway: $_ss_pre_imei2"
@@ -392,14 +586,16 @@ case "$cmd" in
 
         MODEM_RF_DISABLE
         SET_IMEI_SLOT1 "$_f_imei1" || {
-            echo "blue-merle: failed to restore slot 1 IMEI" >&2
-            _screen_restore_display
+            echo "blue-merle: failed to restore slot 1 IMEI — RF left disabled" >&2
+            _recovery_hint
+            _screen_fail
             exit 1
         }
         if [ -n "$_f_imei2" ]; then
             SET_IMEI_SLOT2 "$_f_imei2" || {
-                echo "blue-merle: failed to restore slot 2 IMEI" >&2
-                _screen_restore_display
+                echo "blue-merle: failed to restore slot 2 IMEI — RF left disabled" >&2
+                _recovery_hint
+                _screen_fail
                 exit 1
             }
         fi
@@ -440,7 +636,9 @@ case "$cmd" in
         done
         uci commit wireless
 
-        # Restore WiFi passwords.
+        # Restore WiFi passwords. Only the 2.4 GHz main/guest keys are captured
+        # at install and are re-applied to all bands — stock GL-iNet config
+        # shares one key across bands; per-band custom keys would be flattened.
         echo "blue-merle: restoring factory WiFi passwords..."
         _fkey=$(_get_factory wifi2g_key)
         if [ -n "$_fkey" ]; then
@@ -467,7 +665,8 @@ case "$cmd" in
             uci commit system
         fi
 
-        MODEM_RESET_FOR_PRIVACY
+        _reg_ok=1
+        MODEM_RESET_FOR_PRIVACY || _reg_ok=0
         WIFI_RELOAD
 
         # wifi reload regenerates wireless.sta.macaddr when random_bssid=1.
@@ -486,34 +685,24 @@ case "$cmd" in
         echo "blue-merle: restore complete."
         echo "  Slot 1 IMEI: $(READ_IMEI)"
         echo "  Slot 2 IMEI: $(READ_IMEI_SLOT2)"
-        _screen_splash done
-        sleep 2
+        if [ "$_reg_ok" = "1" ]; then
+            _screen_splash done
+            sleep 2
+        else
+            echo "blue-merle: warning — modem has not re-registered yet; it keeps retrying in the background." >&2
+            _screen_splash warning
+            sleep 3
+        fi
         _screen_restore_display
         ;;
 
+    help|-h)
+        _usage
+        ;;
+
     *)
-        cat >&2 <<'EOF'
-Usage: blue-merle <command> [options]
-
-Commands:
-  install          Capture factory state (run once before first rotation)
-  status           Show per-slot IMEI, IMSI, ICCID and current MACs
-  rotate           Rotate both slot IMEIs and cycle RF for re-attach
-  rotate-wireless  Rotate MACs/SSIDs/hostname/password now (respects option flags)
-  sim-swap         Disable RF, write throwaway IMEIs, poweroff; Stage 2 (final IMEI write) runs on next boot
-  restore          Restore all factory IMEIs, MACs, SSIDs, and hostname
-
-Mode options (rotate / sim-swap):
-  --slot1=random|deterministic|static   IMEI mode for SIM Slot 1 (default: random)
-  --slot2=random|deterministic|static   IMEI mode for SIM Slot 2 / eSIM (default: random)
-  --random                              Both slots random (shorthand)
-  --deterministic                       Both slots deterministic (shorthand)
-  --static                              Both slots use saved static IMEI (shorthand)
-
-Testing options (rotate only):
-  --reboot                       Reboot after writing IMEIs instead of cycling RF
-                                 Use to verify IMEI persistence across a cold boot
-EOF
+        echo "blue-merle: unknown command '$cmd'" >&2
+        _usage >&2
         exit 1
         ;;
 esac

@@ -47,7 +47,9 @@ start() {
 
     _screen_splash rotating
     _screen_msg "SIM swap: waiting for modem AT interface..."
-    _wait_for_at || return 1
+    # On timeout the pending file is intentionally left in place so Stage 2
+    # retries on the next boot; the modem keeps the safe throwaway IMEI.
+    _wait_for_at || { _screen_splash error; return 1; }
 
     _screen_msg "SIM swap: completing final IMEI write..."
 
@@ -89,12 +91,14 @@ start() {
     imei2=$(_gen_imei 2 "$SLOT2_MODE")
 
     if [ -z "$imei1" ] || [ -z "$imei2" ]; then
-        logger -p err -t blue-merle "sim-swap: IMEI generation failed"
+        logger -p err -t blue-merle "sim-swap: IMEI generation failed — RF left disabled"
+        _screen_splash error
         return 1
     fi
 
     SET_IMEIS "$imei1" "$imei2" || {
-        logger -p err -t blue-merle "sim-swap: IMEI write failed"
+        logger -p err -t blue-merle "sim-swap: IMEI write failed — RF left disabled"
+        _screen_splash error
         return 1
     }
 

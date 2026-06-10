@@ -3,8 +3,11 @@
 -- Usage:
 --   lua imei_generate.lua                       → random IMEI using TAC pool
 --   lua imei_generate.lua random                → same as above
---   lua imei_generate.lua static                → deterministic: IMEI derived from device serial (stable per-device)
 --   lua imei_generate.lua deterministic <imsi>  → deterministic: same IMEI for same IMSI (stable per-SIM)
+--
+-- Note: the user-facing "static" IMEI mode is handled entirely in shell
+-- (_gen_imei in functions.sh reads blue-merle.options.static_imei_slotN);
+-- it never reaches this generator.
 --
 -- TAC pool path: /usr/share/blue-merle/tac_pool.json (or dev path via ENV)
 -- Fallback if pool is missing/empty: fully random 14-digit body + Luhn check digit.
@@ -63,26 +66,6 @@ local function djb2_seed(s)
     return seed
 end
 
--- Deterministic IMEI (device-stable): derive from the device serial number.
--- Same device always produces the same IMEI. Stable across reboots.
-local function gen_imei_static(pool)
-    local serial = ""
-    local f = io.open("/proc/gl_hw_info/serial_number", "r")
-    if f then
-        serial = f:read("*line") or ""
-        f:close()
-    end
-    if serial == "" then
-        f = io.open("/proc/sys/kernel/hostname", "r")
-        if f then
-            serial = f:read("*line") or ""
-            f:close()
-        end
-    end
-    math.randomseed(djb2_seed(serial))
-    return gen_imei_from_pool(pool)
-end
-
 -- Deterministic IMEI (SIM-stable): derive from the SIM's IMSI.
 -- Same IMSI always produces the same IMEI — matching v1's -d flag behaviour.
 -- $1 = 15-digit IMSI string.
@@ -115,14 +98,12 @@ local mode = arg[1] or "random"
 local pool = load_tac_pool(TAC_POOL_PATH)
 
 local imei
-if mode == "static" then
-    imei = gen_imei_static(pool)
-elseif mode == "deterministic" then
+if mode == "deterministic" then
     imei = gen_imei_deterministic(pool, arg[2])
 elseif mode == "random" or mode == "" then
     imei = gen_imei_from_pool(pool)
 else
-    io.stderr:write("Usage: imei_generate.lua [random|static|deterministic <imsi>]\n")
+    io.stderr:write("Usage: imei_generate.lua [random|deterministic <imsi>]\n")
     os.exit(1)
 end
 

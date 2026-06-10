@@ -41,6 +41,12 @@ return view.extend({
         var st  = data[0] || {};
         var log = (data[1] || '').trim();
 
+        // The backend prints '---' for absent values — normalize to '' so
+        // empty-checks and rotated-highlighting work on plain truthiness.
+        Object.keys(st).forEach(function(k) {
+            if (st[k] === '---') st[k] = '';
+        });
+
         // ── Helpers ──────────────────────────────────────────────────────────
 
         var noticeEl = E('div', { 'id': 'bm-notice', 'style': 'display:none;margin-bottom:1em' });
@@ -71,7 +77,7 @@ return view.extend({
         }
 
         function handleRotateImeis() {
-            startCountdown('Rotation started — allow 30–90 s for modem RF cycle.', 90);
+            startCountdown('Rotation started — allow 30–150 s for modem RF cycle.', 150);
             exec('rotate').catch(function(e) {
                 if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
                 showNotice('Error: ' + e.message, true);
@@ -89,9 +95,21 @@ return view.extend({
         function handleRestore() {
             if (!window.confirm('Restore all factory values?\nThis will reveal your real device identity.'))
                 return;
-            startCountdown('Restore started.', 90);
+            startCountdown('Restore started.', 150);
             exec('restore').catch(function(e) {
                 if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+                showNotice('Error: ' + e.message, true);
+            });
+        }
+
+        function handleSimSwap() {
+            if (!window.confirm('Start SIM swap?\n\nThis writes throwaway IMEIs and POWERS OFF the device in about 5 seconds.'))
+                return;
+            if (!window.confirm('Confirm again: the device will shut down now.\n\nWhile it is off: swap the SIM(s). On the next boot the final IMEIs are written automatically before the modem attaches.'))
+                return;
+            exec('sim_swap').then(function() {
+                showNotice('SIM swap started — the device is powering off. Swap SIM(s), then power back on.', false);
+            }).catch(function(e) {
                 showNotice('Error: ' + e.message, true);
             });
         }
@@ -203,10 +221,19 @@ return view.extend({
                 [ E('legend', { 'style': 'border-bottom:1px solid #ccc;width:100%;padding-bottom:5px;margin-bottom:8px' }, [ title ]) ].concat(children));
         }
 
-        // ── IMSI async placeholders ───────────────────────────────────────────
+        // ── IMSI / network async placeholders ─────────────────────────────────
 
         var imsi1El = E('span', { 'id': 'bm-imsi1', 'style': 'color:#aaa' }, [ 'Loading…' ]);
         var imsi2El = E('span', { 'id': 'bm-imsi2', 'style': 'color:#aaa' }, [ 'Loading…' ]);
+        var net1El  = E('span', { 'id': 'bm-net1',  'style': 'color:#aaa' }, [ 'Loading…' ]);
+        var net2El  = E('span', { 'id': 'bm-net2',  'style': 'color:#aaa' }, [ 'Loading…' ]);
+        var netInfoEl = E('span', {}, []);
+
+        function netColor(reg) {
+            if (/^registered/.test(reg)) return '#1a7f3c';
+            if (/denied/.test(reg)) return '#c00';
+            return 'var(--text-color-medium)';
+        }
 
         // ── Build page ────────────────────────────────────────────────────────
 
@@ -321,8 +348,12 @@ return view.extend({
                             E('td', { 'style': 'padding:1px 8px;font-family:monospace;color:var(--text-color-medium)' }, [ st.factory_i1 && st.factory_i1 !== '---' ? st.factory_i1 : '' ])
                         ]),
                         E('tr', {}, [
-                            E('td', { 'style': 'padding:1px 8px 8px;color:var(--text-color-medium);font-size:.82em' }, [ 'IMSI' ]),
-                            E('td', { 'style': 'padding:1px 8px 8px;font-family:monospace', 'colspan': '2' }, [ imsi1El ])
+                            E('td', { 'style': 'padding:1px 8px;color:var(--text-color-medium);font-size:.82em' }, [ 'IMSI' ]),
+                            E('td', { 'style': 'padding:1px 8px;font-family:monospace', 'colspan': '2' }, [ imsi1El ])
+                        ]),
+                        E('tr', {}, [
+                            E('td', { 'style': 'padding:1px 8px 8px;color:var(--text-color-medium);font-size:.82em' }, [ 'Network' ]),
+                            E('td', { 'style': 'padding:1px 8px 8px', 'colspan': '2' }, [ net1El ])
                         ]),
                         E('tr', {}, [ E('td', { 'colspan': '3', 'style': 'padding:8px 8px 2px;font-size:.82em;font-weight:700;color:var(--text-color-high);border-top:1px solid var(--border-color-high)' }, [ 'SIM Slot 2 / eSIM' ]) ]),
                         E('tr', {}, [
@@ -331,11 +362,16 @@ return view.extend({
                             E('td', { 'style': 'padding:1px 8px;font-family:monospace;color:var(--text-color-medium)' }, [ st.factory_i2 && st.factory_i2 !== '---' ? st.factory_i2 : '' ])
                         ]),
                         E('tr', {}, [
-                            E('td', { 'style': 'padding:1px 8px 6px;color:var(--text-color-medium);font-size:.82em' }, [ 'IMSI' ]),
-                            E('td', { 'style': 'padding:1px 8px 6px;font-family:monospace', 'colspan': '2' }, [ imsi2El ])
+                            E('td', { 'style': 'padding:1px 8px;color:var(--text-color-medium);font-size:.82em' }, [ 'IMSI' ]),
+                            E('td', { 'style': 'padding:1px 8px;font-family:monospace', 'colspan': '2' }, [ imsi2El ])
+                        ]),
+                        E('tr', {}, [
+                            E('td', { 'style': 'padding:1px 8px 6px;color:var(--text-color-medium);font-size:.82em' }, [ 'Network' ]),
+                            E('td', { 'style': 'padding:1px 8px 6px', 'colspan': '2' }, [ net2El ])
                         ])
                     ])
-                ])
+                ]),
+                E('div', { 'style': 'padding:4px 8px 0;color:var(--text-color-medium);font-size:.82em' }, [ netInfoEl ])
             ]),
 
             // ── Wireless/System Identity ───────────────────────────────────────
@@ -390,6 +426,27 @@ return view.extend({
                 ]),
                 modeDesc2El,
                 staticImeiSection,
+                E('div', { 'style': 'display:flex;align-items:center;margin-top:10px' }, [
+                    E('span', { 'style': 'font-size:.85em;margin-right:8px' }, [ 'Re-attach timeout (seconds):' ]),
+                    (function() {
+                        var inp = E('input', {
+                            'type': 'number', 'min': '10', 'max': '600',
+                            'value': st.register_timeout || '120',
+                            'style': 'width:80px;padding:3px 5px;border:1px solid #ccc;border-radius:3px'
+                        });
+                        inp.addEventListener('blur', function() {
+                            var v = parseInt(inp.value, 10);
+                            if (isNaN(v) || v < 10 || v > 600) { inp.style.borderColor = '#c00'; return; }
+                            inp.style.borderColor = '#ccc';
+                            fs.exec(cmd, ['set:register_timeout=' + v])
+                                .then(function() { flashSaved(imeiSavedEl); })
+                                .catch(function(e) { console.error('set option failed:', e.message); });
+                        });
+                        return inp;
+                    })(),
+                    E('span', { 'style': 'color:var(--text-color-medium);font-size:.82em;margin-left:8px' },
+                        [ 'How long rotate/restore waits for re-registration before showing the warning screen.' ])
+                ]),
                 E('div', { 'style': 'font-size:.85em;font-weight:600;color:var(--text-color-high);border-bottom:1px solid var(--border-color-high);padding-bottom:3px;margin-bottom:8px;margin-top:12px;display:flex;align-items:center;justify-content:space-between' }, [ 'Touchscreen Trigger', touchSavedEl ]),
                 E('div', { 'style': 'margin-bottom:4px' }, [
                     checkbox('Enable clock long-press to trigger SIM swap', 'touch_enabled', st.touch_enabled === '1', touchSavedEl)
@@ -406,6 +463,8 @@ return view.extend({
                     E('dd', { 'style': 'margin:0' }, [ '— writes new IMEIs using the selected mode and cycles modem RF for re-registration.' ]),
                     E('dt', { 'style': 'font-weight:600;white-space:nowrap;color:var(--text-color-high)' }, [ 'Rotate Wireless/System' ]),
                     E('dd', { 'style': 'margin:0' }, [ '— immediately applies new MACs, SSIDs, hostname, and password per the checked options.' ]),
+                    E('dt', { 'style': 'font-weight:600;white-space:nowrap;color:var(--text-color-high)' }, [ 'SIM Swap' ]),
+                    E('dd', { 'style': 'margin:0' }, [ '— writes throwaway IMEIs and powers the device off; swap SIM(s) while off, final IMEIs are written on next boot.' ]),
                     E('dt', { 'style': 'font-weight:600;white-space:nowrap;color:var(--text-color-high)' }, [ 'Restore Factory' ]),
                     E('dd', { 'style': 'margin:0' }, [ '— returns all identity values to factory state.' ])
                 ]),
@@ -418,6 +477,10 @@ return view.extend({
                         'class': 'btn cbi-button-apply', 'style': 'margin-right:8px',
                         'click': handleRotateWireless
                     }, [ 'Rotate Wireless/System' ]),
+                    E('button', {
+                        'class': 'btn cbi-button-remove', 'style': 'margin-right:8px',
+                        'click': handleSimSwap
+                    }, [ 'SIM Swap (powers off)' ]),
                     E('button', {
                         'class': 'btn cbi-button-reset',
                         'click': handleRestore
@@ -467,7 +530,7 @@ return view.extend({
             });
         });
 
-        // Populate IMSI asynchronously — these are slow AT reads
+        // Populate IMSI + network state asynchronously — these are slow AT reads
         exec('imsi').then(function(out) {
             var r;
             try { r = JSON.parse(out); } catch(e) { r = {}; }
@@ -475,11 +538,23 @@ return view.extend({
             imsi1El.style.color  = (r.slot1 && r.slot1 !== '__failed__') ? '' : 'var(--text-color-medium)';
             imsi2El.textContent = r.slot2 === '__failed__' ? 'Failed to Populate' : r.slot2 || 'No SIM or eSIM Detected';
             imsi2El.style.color  = (r.slot2 && r.slot2 !== '__failed__') ? '' : 'var(--text-color-medium)';
+            net1El.textContent = r.reg1 || 'unavailable';
+            net1El.style.color = netColor(r.reg1 || '');
+            net2El.textContent = r.reg2 || 'unavailable';
+            net2El.style.color = netColor(r.reg2 || '');
+            var info = [];
+            if (r.operator) info.push('Operator: ' + r.operator);
+            if (r.signal && r.signal !== 'unknown') info.push('Signal: ' + r.signal);
+            netInfoEl.textContent = info.join('  ·  ');
         }).catch(function() {
             imsi1El.textContent = 'No SIM Detected';
             imsi1El.style.color  = 'var(--text-color-medium)';
             imsi2El.textContent = 'No SIM or eSIM Detected';
             imsi2El.style.color  = 'var(--text-color-medium)';
+            net1El.textContent = 'unavailable';
+            net1El.style.color = 'var(--text-color-medium)';
+            net2El.textContent = 'unavailable';
+            net2El.style.color = 'var(--text-color-medium)';
         });
 
         return page;

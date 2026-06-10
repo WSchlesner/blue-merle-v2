@@ -4,7 +4,13 @@
 # gl_clients (START=99) records client MACs to /etc/oui-tertf/client.db on flash.
 # We mount a tmpfs over /etc/oui-tertf/ before gl_clients starts so that all
 # writes go to RAM and the database never persists across reboots.
-# The existing flash copy is shredded (or zero-wiped if shred unavailable).
+#
+# The tmpfs mount IS the protection: it stops client-MAC history from ever
+# reaching flash. The pre-existing on-flash copy is unlinked here, but cannot
+# be physically erased from userspace — the Mudi 7's overlay is ext4 on eMMC,
+# whose flash-translation-layer remaps overwrites to fresh cells, so shred/dd
+# overwrite-in-place is ineffective (and an unbounded `dd if=/dev/zero` would
+# fill the overlay to ENOSPC at boot). We therefore just remove the file.
 #
 # Must run before gl-tertf (START=60) and gl_clients (START=99).
 
@@ -17,14 +23,8 @@ DB_FILE="${DB_DIR}/client.db"
 _wipe() {
     local f="$1"
     [ -f "$f" ] || return 0
-    if which shred >/dev/null 2>&1; then
-        shred --force --remove "$f" 2>/dev/null
-    else
-        # Overwrite with zeros then remove.
-        # Use large blocks for speed — coreutils-shred (IPK dep) replaces this.
-        dd if=/dev/zero of="$f" bs=1M 2>/dev/null
-        rm -f "$f"
-    fi
+    # Plain unlink — overwrite-in-place buys nothing on an eMMC FTL (see header).
+    rm -f "$f"
 }
 
 start() {

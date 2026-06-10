@@ -20,7 +20,7 @@ _SCREENS_DIR=/usr/share/blue-merle/screens
 # Safe to call at any boot stage — stop is a no-op if gl_screen isn't running.
 # Uses procd ubus delete before stop to prevent automatic respawn (gl_screen
 # has procd_set_param respawn which would otherwise restart it within seconds).
-# $1 = frame name (rotating|done|simswap|restoring)
+# $1 = frame name (rotating|done|simswap|restoring|error|warning)
 _screen_splash() {
     local frame="${_SCREENS_DIR}/${1}.rgb565"
     [ -f "$frame" ] || return 0
@@ -42,6 +42,23 @@ _screen_restore_display() {
     /etc/init.d/gl_screen start >/dev/null 2>&1
 }
 
+# Show the error frame on failure, then return to the normal UI.
+# For interactive (user-triggered) operations only. RF is intentionally left
+# disabled on failure — a privacy tool must never transmit a half-rotated
+# identity — so this only surfaces the failure, it does not re-enable RF.
+_screen_fail() {
+    _screen_splash error
+    sleep 3
+    _screen_restore_display
+}
+
+# Print how to recover after a failure that left RF disabled (CFUN=4).
+_recovery_hint() {
+    echo "blue-merle: RF is OFF (CFUN=4) — the device will not connect until recovered." >&2
+    echo "blue-merle: recover by re-running the operation, or 'blue-merle restore'," >&2
+    echo "blue-merle: or force RF on manually: gl_modem -B ${BUS} -U 1 AT 'AT+CFUN=1'" >&2
+}
+
 # ── Modem AT helpers ─────────────────────────────────────────────────────────
 
 # Send one AT command via the active subscription channel.
@@ -49,6 +66,11 @@ _at() {
     gl_modem -B "$BUS" -U "$SUB" AT "$1"
 }
 
+# True unless the option is explicitly set to 0 (unset = enabled).
+# Shared by the boot service and the CLI: _opt_enabled <option-name>
+_opt_enabled() {
+    [ "$(uci -q get "blue-merle.options.$1" 2>/dev/null)" != "0" ]
+}
 
 # Return the active data SIM slot (1 or 2) without touching the AT interface.
 # Reads dds_id from UCI network config (updated by cellular_manager on DDS changes).
@@ -79,11 +101,12 @@ READ_IMEI_SLOT2() {
     _at "AT+EGMR=0,11" | tr -d '\r' | grep -oE '[0-9]{15}'
 }
 
-# SIM Slot 1 IMSI — reads via subscription 1 (-U 1), retries up to 3×.
-READ_IMSI_SLOT1() {
-    local i=0 imsi
+# Read IMSI via gl_modem subscription $1, retrying up to 3× (the SIM can be
+# slow to answer right after modem init). Returns non-zero if no SIM answers.
+_read_imsi() {
+    local sub="$1" i=0 imsi
     while [ "$i" -lt 3 ]; do
-        imsi=$(gl_modem -B "$BUS" -U 1 AT AT+CIMI | tr -d '\r' | grep -E '^[0-9]{6,15}$')
+        imsi=$(gl_modem -B "$BUS" -U "$sub" AT AT+CIMI | tr -d '\r' | grep -E '^[0-9]{6,15}$')
         [ -n "$imsi" ] && { echo "$imsi"; return 0; }
         i=$((i + 1))
         sleep 2
@@ -91,89 +114,63 @@ READ_IMSI_SLOT1() {
     return 1
 }
 
-# SIM Slot 2 IMSI — reads via subscription 2 (-U 2), retries up to 3×.
-# Returns non-zero if no SIM2 is present or SIM is inactive/dead.
-READ_IMSI_SLOT2() {
-    local i=0 imsi
-    while [ "$i" -lt 3 ]; do
-        imsi=$(gl_modem -B "$BUS" -U 2 AT AT+CIMI | tr -d '\r' | grep -E '^[0-9]{6,15}$')
-        [ -n "$imsi" ] && { echo "$imsi"; return 0; }
-        i=$((i + 1))
-        sleep 2
-    done
-    return 1
-}
+READ_IMSI_SLOT1() { _read_imsi 1; }
+READ_IMSI_SLOT2() { _read_imsi 2; }
 
-# Generic READ_IMSI — slot 1 (backward-compat alias).
-READ_IMSI() {
-    READ_IMSI_SLOT1
-}
-
-# SIM Slot 1 ICCID — try AT+QCCID first, fall back to AT+CCID.
-READ_ICCID_SLOT1() {
-    local out
-    out=$(gl_modem -B "$BUS" -U 1 AT AT+QCCID | tr -d '\r')
+# Read ICCID via gl_modem subscription $1 — try AT+QCCID, fall back to AT+CCID.
+_read_iccid() {
+    local sub="$1" out
+    out=$(gl_modem -B "$BUS" -U "$sub" AT AT+QCCID | tr -d '\r')
     if echo "$out" | grep -q '+QCCID:'; then
         echo "$out" | grep -o '+QCCID:.*' | sed 's/+QCCID: //' | tr -d 'F'
         return
     fi
-    gl_modem -B "$BUS" -U 1 AT AT+CCID | tr -d '\r' | grep -o '+CCID:.*' | sed 's/+CCID: //' | tr -d 'F'
+    gl_modem -B "$BUS" -U "$sub" AT AT+CCID | tr -d '\r' | grep -o '+CCID:.*' | sed 's/+CCID: //' | tr -d 'F'
 }
 
-# SIM Slot 2 ICCID — reads via subscription 2.
-READ_ICCID_SLOT2() {
-    local out
-    out=$(gl_modem -B "$BUS" -U 2 AT AT+QCCID | tr -d '\r')
-    if echo "$out" | grep -q '+QCCID:'; then
-        echo "$out" | grep -o '+QCCID:.*' | sed 's/+QCCID: //' | tr -d 'F'
-        return
-    fi
-    gl_modem -B "$BUS" -U 2 AT AT+CCID | tr -d '\r' | grep -o '+CCID:.*' | sed 's/+CCID: //' | tr -d 'F'
-}
+READ_ICCID_SLOT1() { _read_iccid 1; }
+READ_ICCID_SLOT2() { _read_iccid 2; }
 
-# Generic READ_ICCID — slot 1 (backward-compat alias).
-READ_ICCID() {
-    READ_ICCID_SLOT1
-}
-
-# Write IMEI for SIM Slot 1 (AT+EGMR field 7).
-SET_IMEI_SLOT1() {
-    local imei="$1"
+# Write one IMEI via AT+EGMR after validating it is exactly 15 digits.
+# _set_imei <egmr-field> <imei> <label>
+_set_imei() {
+    local field="$1" imei="$2" label="$3"
+    case "$imei" in *[!0-9]*|'')
+        echo "blue-merle: ${label}: IMEI must contain only digits" >&2
+        return 1 ;;
+    esac
     if [ ${#imei} -ne 15 ]; then
-        echo "blue-merle: SET_IMEI_SLOT1: expected 15-digit IMEI, got ${#imei} digits" >&2
+        echo "blue-merle: ${label}: expected 15-digit IMEI, got ${#imei} digits" >&2
         return 1
     fi
     local out
-    out=$(_at "AT+EGMR=1,7,\"${imei}\"" 2>&1)
+    out=$(_at "AT+EGMR=1,${field},\"${imei}\"" 2>&1)
     if ! echo "$out" | grep -q "OK"; then
-        echo "blue-merle: EGMR field 7 (slot 1) write failed" >&2
+        echo "blue-merle: EGMR field ${field} (${label}) write failed" >&2
         return 1
     fi
     sleep 1
 }
 
-# Write IMEI for SIM Slot 2 / eSIM (AT+EGMR field 11).
+# SIM Slot 1 IMEI — AT+EGMR field 7.
+SET_IMEI_SLOT1() {
+    _set_imei 7 "$1" "slot 1"
+}
+
+# SIM Slot 2 / eSIM IMEI — AT+EGMR field 11.
 # Also updates /root/esim/imei so the eSIM LPA uses this IMEI for RSP identity.
 SET_IMEI_SLOT2() {
-    local imei="$1"
-    if [ ${#imei} -ne 15 ]; then
-        echo "blue-merle: SET_IMEI_SLOT2: expected 15-digit IMEI, got ${#imei} digits" >&2
-        return 1
+    _set_imei 11 "$1" "slot 2/eSIM" || return 1
+    if [ -f /root/esim/imei ]; then
+        printf '%s\n' "$1" > /root/esim/imei
     fi
-    local out
-    out=$(_at "AT+EGMR=1,11,\"${imei}\"" 2>&1)
-    if ! echo "$out" | grep -q "OK"; then
-        echo "blue-merle: EGMR field 11 (slot 2/eSIM) write failed" >&2
-        return 1
-    fi
-    sleep 1
-    [ -f /root/esim/imei ] && printf '%s\n' "$imei" > /root/esim/imei
+    return 0
 }
 
 # Write both IMEIs, persist all NV changes to flash, and refresh WebUI.
 # $1 = Slot 1 IMEI (field 7), $2 = Slot 2/eSIM IMEI (field 11)
 SET_IMEIS() {
-    local imei1="$1" imei2="$2"
+    local imei1="$1" imei2="$2" _slot
     SET_IMEI_SLOT1 "$imei1" || return 1
     SET_IMEI_SLOT2 "$imei2" || return 1
     _at AT+QPRTPARA=1 >/dev/null 2>&1
@@ -188,32 +185,6 @@ SET_IMEIS() {
 
 GENERATE_IMEI() {
     lua /lib/blue-merle/imei_generate.lua random
-}
-
-GENERATE_IMEI_STATIC() {
-    lua /lib/blue-merle/imei_generate.lua static
-}
-
-# Deterministic IMEI keyed to SIM Slot 1 IMSI.
-GENERATE_IMEI_DETERMINISTIC() {
-    local imsi
-    imsi=$(READ_IMSI_SLOT1)
-    if [ -z "$imsi" ]; then
-        echo "blue-merle: GENERATE_IMEI_DETERMINISTIC: could not read slot 1 IMSI" >&2
-        return 1
-    fi
-    lua /lib/blue-merle/imei_generate.lua deterministic "$imsi"
-}
-
-# Deterministic IMEI keyed to SIM Slot 2 IMSI.
-GENERATE_IMEI_DETERMINISTIC_SLOT2() {
-    local imsi
-    imsi=$(READ_IMSI_SLOT2)
-    if [ -z "$imsi" ]; then
-        echo "blue-merle: GENERATE_IMEI_DETERMINISTIC_SLOT2: could not read slot 2 IMSI" >&2
-        return 1
-    fi
-    lua /lib/blue-merle/imei_generate.lua deterministic "$imsi"
 }
 
 # Generate an IMEI for a given slot using the specified mode.
@@ -241,12 +212,24 @@ _gen_imei() {
         else
             static_imei=$(uci -q get blue-merle.options.static_imei_slot2 2>/dev/null)
         fi
-        if [ -z "$static_imei" ]; then
-            echo "blue-merle: slot ${slot} static IMEI not configured — using random IMEI" >&2
-            GENERATE_IMEI
-        else
-            printf '%s\n' "$static_imei"
-        fi
+        case "$static_imei" in
+            '')
+                echo "blue-merle: slot ${slot} static IMEI not configured — using random IMEI" >&2
+                GENERATE_IMEI
+                ;;
+            *[!0-9]*)
+                echo "blue-merle: slot ${slot} static IMEI invalid — using random IMEI" >&2
+                GENERATE_IMEI
+                ;;
+            *)
+                if [ ${#static_imei} -eq 15 ]; then
+                    printf '%s\n' "$static_imei"
+                else
+                    echo "blue-merle: slot ${slot} static IMEI is not 15 digits — using random IMEI" >&2
+                    GENERATE_IMEI
+                fi
+                ;;
+        esac
     else
         GENERATE_IMEI
     fi
@@ -264,33 +247,14 @@ MODEM_RF_DISABLE() {
     sleep 2
 }
 
-# Full modem reinit: power everything down then bring RF back off.
-# Use after a physical SIM swap to force the modem to re-read the new SIM.
-# Polls AT+CPIN? until the SIM is READY (or 30s timeout) before returning.
-MODEM_RF_REINIT() {
-    _at AT+CFUN=0 >/dev/null 2>&1    # full minimum-functionality (SIM and RF off)
-    sleep 4
-    _at AT+CFUN=4 >/dev/null 2>&1    # RF off, SIM re-initializes with new card
-
-    local elapsed=0
-    while [ "$elapsed" -lt 30 ]; do
-        local cpin
-        cpin=$(_at AT+CPIN? | tr -d '\r')
-        if echo "$cpin" | grep -q 'READY'; then
-            return 0
-        fi
-        sleep 2
-        elapsed=$((elapsed + 2))
-    done
-    # SIM not ready — caller will check IMSI and warn if unchanged.
-    return 0
-}
-
-# Re-enable RF and wait for network re-attachment.
-# Stops cellular_manager around the AT cycle to prevent state-machine conflict.
-# Block until re-attach or $1 seconds timeout (default 90).
+# Re-enable RF and wait for network re-attachment, then restart
+# gl_cellular_manager so its cached IMEI matches the modem.
+# Blocks until re-attach or timeout: $1 seconds if given, else
+# blue-merle.options.register_timeout, else 120. A timeout is non-fatal —
+# RF stays on and the modem keeps retrying registration in the background.
 MODEM_RESET_FOR_PRIVACY() {
-    local timeout="${1:-90}"
+    local timeout="${1:-$(uci -q get blue-merle.options.register_timeout 2>/dev/null)}"
+    case "$timeout" in ''|*[!0-9]*) timeout=120 ;; esac
 
     # Do NOT use cm_stop_dial — it writes allow_dial=0 to UCI flash and persists
     # across reboots, making cellular_manager skip SIM detection on next boot.
@@ -318,6 +282,42 @@ MODEM_RESET_FOR_PRIVACY() {
     /etc/init.d/gl_cellular_manager restart >/dev/null 2>&1
 
     return $_result
+}
+
+# ── Network status (read-only) ──────────────────────────────────────────────
+
+# Decode a +CEREG <stat> digit into a human-readable string.
+_decode_reg_stat() {
+    case "$1" in
+        0) echo "not registered (idle)" ;;
+        1) echo "registered (home)" ;;
+        2) echo "searching..." ;;
+        3) echo "registration denied" ;;
+        4) echo "unknown" ;;
+        5) echo "registered (roaming)" ;;
+        *) echo "unavailable" ;;
+    esac
+}
+
+# Raw +CEREG <stat> digit via gl_modem subscription $1 (covers LTE/5G NSA).
+_read_reg_stat() {
+    gl_modem -B "$BUS" -U "$1" AT 'AT+CEREG?' 2>/dev/null | tr -d '\r' \
+        | grep -o '+CEREG: [0-9],[0-9]*' | cut -d, -f2
+}
+
+# Operator name (long alphanumeric form) — empty when not registered.
+READ_OPERATOR() {
+    _at 'AT+COPS?' | tr -d '\r' | sed -n 's/.*+COPS: [0-9],[0-9],"\([^"]*\)".*/\1/p'
+}
+
+# Signal strength: +CSQ 0-31 mapped to dBm (-113 + 2×csq); 99 = unknown.
+READ_SIGNAL() {
+    local csq
+    csq=$(_at 'AT+CSQ' | tr -d '\r' | grep -o '+CSQ: [0-9]*' | grep -o '[0-9]*$')
+    case "$csq" in
+        ''|99) echo "unknown" ;;
+        *)     echo "$(( -113 + 2 * csq )) dBm" ;;
+    esac
 }
 
 # ── MAC generation ───────────────────────────────────────────────────────────
@@ -353,12 +353,52 @@ _pick_oui() {
     echo "$ouis" | sed -n "${idx}p"
 }
 
+# List "OUI BRAND" pairs from the routers section of the pool.
+_load_router_identities() {
+    awk '
+        /"routers"/{in_section=1; next}
+        in_section && /\]/{in_section=0}
+        in_section && /"oui"/{
+            oui=""; brand=""
+            if (match($0, /[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}/))
+                oui = substr($0, RSTART, RLENGTH)
+            if (match($0, /"brand"[^"]*"[^"]*"/)) {
+                b = substr($0, RSTART, RLENGTH)
+                sub(/^"brand"[^"]*"/, "", b); sub(/"$/, "", b)
+                brand = b
+            }
+            if (oui != "" && brand != "") print oui " " brand
+        }
+    ' "$_OUI_POOL_PATH" 2>/dev/null
+}
+
+# Pick ONE router OUI+brand for this rotation. A real consumer router uses the
+# same vendor OUI on every band, and its default SSID matches that vendor —
+# mixing vendors across bands (or vs. the SSID) is a fingerprinting flag.
+# Sets _BM_ROUTER_OUI and _BM_ROUTER_BRAND; TP-Link fallback if the pool is missing.
+_pick_router_identity() {
+    local ids count idx line
+    ids=$(_load_router_identities)
+    count=$(echo "$ids" | grep -c '.')
+    if [ "$count" -eq 0 ]; then
+        _BM_ROUTER_OUI="EC:08:6B"
+        _BM_ROUTER_BRAND="TP-Link"
+        return
+    fi
+    idx=$(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % count + 1 ))
+    line=$(echo "$ids" | sed -n "${idx}p")
+    _BM_ROUTER_OUI="${line%% *}"
+    _BM_ROUTER_BRAND="${line#* }"
+}
+
+# Generate one MAC: random OUI from $1 category, or a forced OUI via $2.
 MAC_GEN() {
-    local category="${1:-routers}"
-    local ouis
-    ouis=$(_load_ouis "$category")
-    local oui
-    oui=$(_pick_oui "$ouis")
+    local category="${1:-routers}" oui="$2"
+    if [ -z "$oui" ]; then
+        local ouis
+        ouis=$(_load_ouis "$category")
+        oui=$(_pick_oui "$ouis")
+    fi
     # Force LA bit on first octet (0x02 mask) — keeps channel co-location intact.
     local _first _rest
     _first=$(printf '%02x' $(( 0x${oui%%:*} | 0x02 )))
@@ -368,23 +408,30 @@ MAC_GEN() {
     echo "${_first}:${_rest}:${nic}" | tr '[:upper:]' '[:lower:]'
 }
 
-MAC_GEN_ROUTER()  { MAC_GEN routers; }
+MAC_GEN_ROUTER()  { MAC_GEN routers "$1"; }
 MAC_GEN_CLIENT()  { MAC_GEN clients; }
-UNICAST_MAC_GEN() { MAC_GEN routers; }  # v1 compat alias
 
 # ── Wireless UCI randomization ────────────────────────────────────────────────
 # Mudi 7 uses named interfaces (wifi2g / wifi5g / wifi6g / sta / guest*g).
 
+# Session brand handoff: RANDOMIZE_MACADDR records the chosen router brand
+# here (RAM) so RANDOMIZE_SSID can broadcast a matching SSID prefix.
+_SESSION_BRAND_FILE=/tmp/blue-merle.session_brand
+
 RANDOMIZE_MACADDR() {
+    local _radio _iface
     # Disable GL-iNet's BSSID randomization — we own MAC rotation from here.
     # LA bit is forced in MAC_GEN so Qualcomm's channel co-location still works.
     for _radio in wifi0 wifi1 wifi2; do
         uci -q set "wireless.${_radio}.random_bssid=0" 2>/dev/null
     done
-    # AP interfaces: router-class OUI MACs (look like common home routers)
+    # One router identity per rotation: every AP BSSID shares the same vendor
+    # OUI (only the NIC bytes differ), like a real consumer router.
+    _pick_router_identity
+    printf '%s' "$_BM_ROUTER_BRAND" > "$_SESSION_BRAND_FILE"
     for _iface in wifi2g wifi5g wifi6g guest2g guest5g guest6g; do
         uci get "wireless.${_iface}" >/dev/null 2>&1 && \
-            uci set "wireless.${_iface}.macaddr=$(MAC_GEN_ROUTER)"
+            uci set "wireless.${_iface}.macaddr=$(MAC_GEN_ROUTER "$_BM_ROUTER_OUI")"
     done
     # STA (repeater upstream): client-class OUI MAC; keep repeater config in sync.
     # repeater.@network[0].macaddr uses GL-iNet's r, prefix format.
@@ -401,6 +448,7 @@ RANDOMIZE_MACADDR() {
 
 # Re-enable GL-iNet's BSSID randomization (called by blue-merle restore).
 RESTORE_RANDOM_BSSID() {
+    local _radio
     for _radio in wifi0 wifi1 wifi2; do
         uci -q set "wireless.${_radio}.random_bssid=1" 2>/dev/null
     done
@@ -408,18 +456,16 @@ RESTORE_RANDOM_BSSID() {
 }
 
 RANDOMIZE_SSID() {
-    local _idx _suffix _new_ssid
-    _idx=$(( $(od -An -N1 -tu1 /dev/urandom | tr -d ' ') % 7 ))
+    local _suffix _new_ssid _iface _brand
+    # Use the brand recorded by RANDOMIZE_MACADDR so the SSID matches the
+    # BSSID vendor; pick a fresh identity only if MAC rotation didn't run.
+    _brand=$(cat "$_SESSION_BRAND_FILE" 2>/dev/null)
+    if [ -z "$_brand" ]; then
+        _pick_router_identity
+        _brand="$_BM_ROUTER_BRAND"
+    fi
     _suffix=$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')
-    case "$_idx" in
-        0) _new_ssid="NETGEAR-${_suffix}" ;;
-        1) _new_ssid="TP-Link-${_suffix}" ;;
-        2) _new_ssid="ASUS-${_suffix}" ;;
-        3) _new_ssid="Linksys-${_suffix}" ;;
-        4) _new_ssid="eero-${_suffix}" ;;
-        5) _new_ssid="ORBI-${_suffix}" ;;
-        *) _new_ssid="HOME-${_suffix}" ;;
-    esac
+    _new_ssid="${_brand}-${_suffix}"
     for _iface in wifi2g wifi5g wifi6g; do
         uci get "wireless.${_iface}" >/dev/null 2>&1 && \
             uci set "wireless.${_iface}.ssid=${_new_ssid}"
@@ -433,7 +479,7 @@ RANDOMIZE_SSID() {
 
 RANDOMIZE_PASSWORD() {
     # Main (wifi2g/5g/6g) and guest (guest2g/5g/6g) get separate passwords.
-    local _main_pass _guest_pass
+    local _main_pass _guest_pass _iface
     _main_pass=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')
     _guest_pass=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n' | tr '[:lower:]' '[:upper:]')
     for _iface in wifi2g wifi5g wifi6g; do

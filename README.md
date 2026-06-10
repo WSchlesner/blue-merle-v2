@@ -103,8 +103,8 @@ The installer verifies the device model and firmware version before touching any
 **2. Install the package:**
 
 ```sh
-scp -O blue-merle-v2-1.0.0-local.ipk root@192.168.8.1:/tmp/
-ssh root@192.168.8.1 opkg install /tmp/blue-merle-v2-1.0.0-local.ipk
+scp -O blue-merle-v2_1.0.0-Script-Local.ipk root@192.168.8.1:/tmp/
+ssh root@192.168.8.1 opkg install /tmp/blue-merle-v2_1.0.0-Script-Local.ipk
 ```
 
 Expected output:
@@ -387,7 +387,7 @@ cd blue-merle-v2
 ./build-ipk.sh
 ```
 
-Needs only `bash`, `tar`, and `gzip`. Produces `blue-merle-v2-1.0.0-local.ipk` from the `files/` tree, bundling the pre-compiled `blue-merle-touch` binary. **Use for:** day-to-day development and offline builds.
+Needs only `bash`, `tar`, and `gzip`. Produces `blue-merle-v2_1.0.0-Script-Local.ipk` from the `files/` tree, bundling the pre-compiled `blue-merle-touch` binary. **Use for:** day-to-day development and offline builds.
 
 ### 2. OpenWrt SDK — `Makefile`
 
@@ -414,7 +414,7 @@ Two workflows run on every push, PR, and release tag:
 
 | Workflow | What it does | Output |
 |---|---|---|
-| [`build.yml`](.github/workflows/build.yml) | Fast path — runs `build-ipk.sh` (bundles the pre-compiled touch daemon) | `blue-merle-v2-<version>-{ci\|release}.ipk` |
+| [`build.yml`](.github/workflows/build.yml) | Fast path — runs `build-ipk.sh` (bundles the pre-compiled touch daemon) | `blue-merle-v2_<version>-Script-{CI\|Release}.ipk` |
 | [`sdk-build.yml`](.github/workflows/sdk-build.yml) | Downloads the pinned 23.05.4 SDK (checksum-verified) and compiles everything from source via the `Makefile` | `blue-merle-v2_<version>-SDK-{CI\|Release}.ipk` |
 
 Both upload their IPK as a workflow artifact (retained 30 days). On a `v*.*.*` tag, a GitHub Release is created with **both** IPKs attached — the SDK build is the fully-from-source option:

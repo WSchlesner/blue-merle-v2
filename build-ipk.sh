@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Build blue-merle-v2-VERSION-BUILDMETHOD.ipk without the OpenWrt SDK.
-# An IPK is an ar(1) archive: debian-binary + control.tar.gz + data.tar.gz
+# Build blue-merle-v2_VERSION-Script-BUILDMETHOD.ipk without the OpenWrt SDK.
+# ("Script" marks the build path, alongside the SDK workflow's -SDK- assets.)
 # Usage: ./build-ipk.sh
-# BUILD_METHOD env var controls the suffix: local (default) | ci | release
+# BUILD_METHOD env var controls the suffix: Local (default) | CI | Release
 set -e
 
 PKG_NAME=blue-merle-v2
 PKG_VERSION=1.0.0
-BUILD_METHOD="${BUILD_METHOD:-local}"
+BUILD_METHOD="${BUILD_METHOD:-Local}"
 ARCH=aarch64_cortex-a53
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="${REPO}/build"
 STAGING="${BUILD_DIR}/staging"
 CONTROL_DIR="${BUILD_DIR}/control"
-OUTPUT="${REPO}/${PKG_NAME}-${PKG_VERSION}-${BUILD_METHOD}.ipk"
+OUTPUT="${REPO}/${PKG_NAME}_${PKG_VERSION}-Script-${BUILD_METHOD}.ipk"
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
@@ -22,7 +22,7 @@ for _tool in ar tar install; do
     command -v "$_tool" >/dev/null || { echo "ERROR: '$_tool' not found"; exit 1; }
 done
 
-echo "==> Building ${PKG_NAME}-${PKG_VERSION}-${BUILD_METHOD}.ipk"
+echo "==> Building $(basename "$OUTPUT")"
 
 rm -rf "$BUILD_DIR"
 mkdir -p "$STAGING" "$CONTROL_DIR"

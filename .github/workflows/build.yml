@@ -28,15 +28,28 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+
+      # The release version lives in build-ipk.sh and the Makefile, not in
+      # the tag — refuse to release when they disagree.
+      - name: Verify tag matches PKG_VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          SH_VER="$(sed -n 's/^PKG_VERSION=//p' build-ipk.sh)"
+          MK_VER="$(sed -n 's/^PKG_VERSION:=//p' Makefile)"
+          if [ "$SH_VER" != "$TAG" ] || [ "$MK_VER" != "$TAG" ]; then
+            echo "::error::Tag v${TAG} does not match PKG_VERSION (build-ipk.sh=${SH_VER}, Makefile=${MK_VER}). Bump both, commit, then re-tag."
+            exit 1
+          fi
 
       - name: Build IPK
         env:
-          BUILD_METHOD: ${{ startsWith(github.ref, 'refs/tags/') && 'release' || 'ci' }}
+          BUILD_METHOD: ${{ startsWith(github.ref, 'refs/tags/') && 'Release' || 'CI' }}
         run: ./build-ipk.sh
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: blue-merle-v2-${{ github.ref_name }}-${{ github.sha }}
           path: "*.ipk"

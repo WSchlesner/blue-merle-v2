@@ -423,6 +423,9 @@ Both upload their IPK as a workflow artifact (retained 30 days). On a `v*.*.*` t
 git tag v1.1.0 && git push origin v1.1.0
 ```
 
+The full release procedure — version bumping, tagging rules, and a command
+reference — is documented in [docs/RELEASING.md](docs/RELEASING.md).
+
 ### Rebuilding the touch daemon
 
 If you change `src/blue-merle-touch.c`, cross-compile the static aarch64 binary (Docker + QEMU binfmt):

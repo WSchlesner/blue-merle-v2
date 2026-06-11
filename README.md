@@ -432,10 +432,12 @@ docker run --rm --platform linux/arm64 \
   -v $(pwd)/src:/src -v $(pwd)/files/usr/bin:/out \
   alpine:3.20 \
   sh -c 'apk add --no-cache gcc musl-dev linux-headers && \
-         gcc -O2 -static -o /out/blue-merle-touch /src/blue-merle-touch.c'
+         gcc -O2 -s -static -o /out/blue-merle-touch /src/blue-merle-touch.c'
 ```
 
-Commit the resulting binary so path 1 and CI can bundle it.
+Commit the resulting binary so path 1 and CI can bundle it. The `-s` flag
+strips debug symbols at link time — `build-ipk.sh` refuses to package an
+unstripped binary.
 
 ### Development deploy
 

@@ -18,9 +18,17 @@ OUTPUT="${REPO}/${PKG_NAME}_${PKG_VERSION}-Script-${BUILD_METHOD}.ipk"
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
-for _tool in ar tar install; do
+for _tool in ar tar install file; do
     command -v "$_tool" >/dev/null || { echo "ERROR: '$_tool' not found"; exit 1; }
 done
+
+# The bundled touch daemon must be stripped (see README "Rebuilding the touch
+# daemon" — build with -s). An unstripped binary ships ~290 KB of debug
+# symbols to the router for nothing.
+if file "$REPO/files/usr/bin/blue-merle-touch" | grep -q 'not stripped'; then
+    echo "ERROR: files/usr/bin/blue-merle-touch is unstripped — rebuild with 'gcc -s' or run aarch64 strip on it"
+    exit 1
+fi
 
 echo "==> Building $(basename "$OUTPUT")"
 
